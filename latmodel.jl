@@ -39,9 +39,7 @@ using SharedArrays
 using SplitApplyCombine
 using InvertedIndices
 using JSON
-
-use_existing_data = true
-use_existing_model = true
+using Feather
 
 function load_data(infile::String, use_existing_data::Bool)::DataFrame
   # Load the data into a DataFrame
@@ -55,6 +53,12 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     data = data[completecases(data), :]
 
     println(f"Loaded {nrow(data)} rows")
+
+    # Save the data to a feather file
+    println("Saving data to feather file")
+    Feather.write(joinpath(dirname(infile), replace(infile, ".csv" => ".feather")), data)
+
+    println("Filtering out extreme values")
 
     # setup bin ranges
     mm_v_ego = [2, 40]
@@ -128,6 +132,7 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     println(f"Min count bin has {minimum([size(i,1) for i in flattened_sampled_bin_data])} samples")
 
     CSV.write(joinpath(dirname(infile), replace(infile, ".csv" => "_balanced.csv")), data)
+    Feather.write(joinpath(dirname(infile), replace(infile, ".csv" => "_balanced.feather")), data)
   end
 
   return data
@@ -191,11 +196,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       Dense(4, 1)
   )
 
-  # Define L2 regularization strength
-  l2_reg_strength = 0.002
-  println("L2 regularization strength: $l2_reg_strength")
-  # Define the loss function with L2 regularization
-  loss(x, y) = Flux.mse(model(x), y) + l2_reg_strength * sum(x->x^2, Flux.params(model))
+  # Define the loss function
+  loss(x, y) = Flux.mse(model(x), y')
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -235,7 +237,6 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   else
     while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
         for (X_batch, y_batch) in train_data_loader
-            println("Size of y_batch: $(size(y_batch))")
             train!(loss, params(model), [(X_batch, y_batch)], opt)
         end
 
@@ -289,21 +290,15 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   export_model_params_to_json(model, Matrix{Float64}(input_mean), Matrix{Float64}(input_std), "$model_path.json")
 
 
+  # Evaluate the model on the test set 
+  test_loss = loss(X_test', y_test)
+  println("Test loss (MSE): ", test_loss)
+
   return (model=model, input_mean=input_mean, input_std=input_std, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
 
 end
 
 function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{Float64}, y_train::Vector{Float64}, X_test::Matrix{Float64}, y_test::Vector{Float64}, input_mean::Matrix{Float64}, input_std::Matrix{Float64})
-
-    # Define L2 regularization strength
-  l2_reg_strength = 0.002
-  println("L2 regularization strength: $l2_reg_strength")
-  # Define the loss function with L2 regularization
-  loss(x, y) = Flux.mse(model(x), y) + l2_reg_strength * sum(x->x^2, Flux.params(model))
-
-  # Evaluate the model on the test set and create plots
-  test_loss = loss(X_test', y_test)
-  println("Test loss (MSE): ", test_loss)
 
 
   function feedforward_function(input_data)
@@ -318,18 +313,19 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   steer_command = feedforward_function(example_input)
   println("Steer command: ", steer_command)
 
-
+  max_abs_lat_jerk = 0.2
+  max_abs_lat_g_accel = 0.2
 
   # Create a function to filter the dataset based on speed
   function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false)
     indices = findall(abs.(Xi[:, 1] .- speed) .< tolerance)
     X, y = Xi[indices, :], yi[indices]
     if no_jerk
-      indices = findall(abs.(X[:, 3]) .< 0.2)
+      indices = findall(abs.(X[:, 3]) .< max_abs_lat_jerk)
       X, y = X[indices, :], y[indices]
     end
     if no_roll
-      indices = findall(abs.(X[:, 4]) .< 0.2)
+      indices = findall(abs.(X[:, 4]) .< max_abs_lat_g_accel)
       X, y = X[indices, :], y[indices]
     end
     return X, y
@@ -347,7 +343,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   lateral_acceleration_range = range(-4.0, 4.0, length=100)
 
   plot_col_num = 1
-  p = plot(layout = (size(collect(speed_range), 1), 2), legend=:bottomright, size=(1200, 1800), margin=10mm)
+  p = plot(layout = (size(collect(speed_range), 1), 2), legend=:bottomright, size=(1300, 1800), margin=10mm)
 
   for (si, speed) in enumerate(speed_range)
     # Plot the training data
@@ -370,13 +366,13 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           push!(y_model, steer_command)
       end
       plot!(p, xticks=true, yticks=true)
-      plot!(p[si,plot_col_num], x_model, y_model, label="j_lat = $lj)", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
+      plot!(p[si,plot_col_num], x_model, y_model, label="lat_jerk = $lj", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
     end
 
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph\nwith lateral jerk")
+      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |lat g accel| < {max_abs_lat_g_accel:.2G}")
     else
       title!(p[si,plot_col_num], f"{speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph")
     end
@@ -414,29 +410,29 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           push!(x_model, la)
           push!(y_model, steer_command)
       end
-      plot!(p[si,plot_col_num], x_model, y_model, label="a_lat_g = $gla)", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
+      plot!(p[si,plot_col_num], x_model, y_model, label="lat_g_accel = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
     end
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph\nwith lateral gravitational accel")
+      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |lat g accel| < {max_abs_lat_g_accel:.2G}")
     else
       title!(p[si,plot_col_num], f"{speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph")
     end
   end
   xlabel!(p[size(collect(speed_range),1),plot_col_num], "a_lat (m/s²)")
   # Display the plot
-  savefig(p, plot_path)
+  savefig(p, "$plot_path.png")
   display(p)
 end
 
 function main()
   
-  data = load_data("/Users/haiiro/NoSync/voltlat_med.csv", true)
+  data = load_data("/Users/haiiro/NoSync/voltlat_large.csv", false)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat.bson", false, data)
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", false, data)
   
-  test_plot_model(model, "/Users/haiiro/NoSync/voltlat.png", X_train, y_train, X_test, y_test, input_mean, input_std)
+  test_plot_model(model, "/Users/haiiro/NoSync/voltlat", X_train, y_train, X_test, y_test, input_mean, input_std)
   
 end
 
