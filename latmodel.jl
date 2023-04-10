@@ -39,6 +39,7 @@ using SplitApplyCombine
 using InvertedIndices
 using JSON
 using Feather
+using Dates
 
 function load_data(infile::String, use_existing_data::Bool)::DataFrame
   # Load the data into a DataFrame
@@ -56,6 +57,12 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
 
     println(f"Loaded {nrow(data)} rows")
 
+    # println(f"Loaded data: {names(data)}")
+    println(f"Data {data[1:5, :]}")
+    for col in names(data)
+      println(f"Min and max of column {col}: {minimum(data[:,col])}, {maximum(data[:,col])}")
+    end
+
     # Save the data to a feather file
     println("Saving data to feather file")
     Feather.write(joinpath(dirname(infile), replace(infile, ".csv" => ".feather")), data)
@@ -66,40 +73,45 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     mm_v_ego = [2, 40]
     mm_steer_cmd = [-2.0, 2.0]
     mm_lateral_accel = [-4.45, 4.45]
-    mm_lateral_accel_rate_no_roll = [-2.95, 2.95]
-    mm_roll = [-2.95, 2.95]
+    mm_lateral_jerk = [-2.95, 2.95]
+    mm_roll = [-0.2, 0.2]
 
     # setup bins
     nbins = 80
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 20
+    sample_size = 10
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
-    step_lateral_accel_rate_no_roll = (mm_lateral_accel_rate_no_roll[2] - mm_lateral_accel_rate_no_roll[1]) / nbins
+    step_lateral_jerk = (mm_lateral_jerk[2] - mm_lateral_jerk[1]) / nbins
     step_roll = (mm_roll[2] - mm_roll[1]) / nbins
+
 
     # filter data
     data = filter(row -> mm_v_ego[1] < row.v_ego < mm_v_ego[2], data)
+    println(f"Filtered to {nrow(data)} rows (v_ego)")
     data = filter(row -> abs(row.steer_cmd) <= mm_steer_cmd[2], data)
+    println(f"Filtered to {nrow(data)} rows (steer_cmd)")
     data = filter(row -> abs(row.lateral_accel) < mm_lateral_accel[2], data)
-    data = filter(row -> abs(row.lateral_jerk) < mm_lateral_accel_rate_no_roll[2], data)
+    println(f"Filtered to {nrow(data)} rows (lateral_accel)")
+    data = filter(row -> abs(row.lateral_jerk) < mm_lateral_jerk[2], data)
+    println(f"Filtered to {nrow(data)} rows (lateral_jerk)")
     data = filter(row -> abs(row.roll) < mm_roll[2], data)
+    println(f"Filtered to {nrow(data)} rows (roll)")
     # data = filter(row -> abs(row.a_ego) < 2.95, data)
     # select!(data, Not([:a_ego])) # remove a_ego because it's not used in the model; no good correlations found
-    println(f"Filtered to {nrow(data)} rows")
 
 
     println(f"Calculating bins")
     data[!, :v_ego_bins] = cut(data[!, :v_ego], mm_v_ego[1]:step_v_ego:mm_v_ego[2])
     data[!, :lateral_accel_bins] = cut(data[!, :lateral_accel], mm_lateral_accel[1]:step_lateral_accel:mm_lateral_accel[2])
     data[!, :roll_bins] = cut(data[!, :roll], mm_roll[1]:step_roll:mm_roll[2])
-    data[!, :lateral_accel_rate_no_roll_bins] = cut(data[!, :lateral_jerk], mm_lateral_accel_rate_no_roll[1]:step_lateral_accel_rate_no_roll:mm_lateral_accel_rate_no_roll[2])
+    data[!, :lateral_jerk_bins] = cut(data[!, :lateral_jerk], mm_lateral_jerk[1]:step_lateral_jerk:mm_lateral_jerk[2])
 
     # create a combined column for balancing
     data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins])
     # binning on all four variables is too sparse
-    # data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins], "_", data[!,:lateral_accel_rate_no_roll_bins], "_", data[!,:roll_bins])
+    # data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins], "_", data[!,:lateral_jerk_bins], "_", data[!,:roll_bins])
 
 
     # balance the data in parallel
@@ -148,7 +160,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   select!(data, Not([:combined_column]))
   select!(data, Not([:v_ego_bins]))
   select!(data, Not([:lateral_accel_bins]))
-  select!(data, Not([:lateral_accel_rate_no_roll_bins]))
+  select!(data, Not([:lateral_jerk_bins]))
   select!(data, Not([:roll_bins]))
   
   # split into independent an dependent variables
@@ -203,19 +215,19 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   # Define the range of values for each independent variable
   v_ego_range = range(0, stop=40, length=8)
-  lateral_acceleration_range = range(-4, stop=4, length=11)
-  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
+  lateral_acceleration_range = range(-4, stop=4, length=7)
+  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=7)
   lateral_jerk_range = range(-3, stop=3, length=5)
   lateral_jerk_range_hi = range(-2.99, stop=3.01, length=5)
-  lateral_gravitational_acceleration_range = range(-2, stop=2, length=15)
-  lateral_gravitational_acceleration_range_hi = range(-1.99, stop=2.01, length=15)
+  roll_range = range(-0.2, stop=0.2, length=9)
+  roll_range_hi = range(-0.195, stop=0.205, length=9)
 
   # Create a regular grid of points using Iterators.product
-  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range)]...)
-  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, lateral_gravitational_acceleration_range)]...)
-  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, lateral_gravitational_acceleration_range)]...)
-  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range_hi)]...)
-  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -lateral_gravitational_acceleration_range)]...)
+  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)]...)
+  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)]...)
+  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)]...)
+  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)]...)
+  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)]...)
 
   println(typeof(grid))
   println(typeof(X_test))
@@ -292,7 +304,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   Δloss_last = 0.0
   loss_last = Inf
   loss_cur = 0.0
-  stall_check_count = 24
+  stall_check_count = 25
   stall_count = 0
   epoch = 1
   epoch_max = log10(size(X_train, 1)) > 6 ? 150 : 1000
@@ -336,7 +348,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
             if abs(Δloss) > tol || abs(Δloss_last) > Δtol
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
-                println(f"Epoch: {epoch:3d} (of {epoch_max}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
+                cur_time = Dates.format(now(), "HH:MM:SS")
+                println(f"{cur_time} Epoch: {epoch:3d} (of {epoch_max}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
@@ -349,18 +362,32 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   end
 
-  function feedforward_function(input_data)
+  function feedforward_function(input_data; zero_bias=false)
     # Scale the input data using the stored mean and standard deviation values
     input_data_scaled = (input_data .- input_mean) ./ input_std
-    steer_command = model(input_data_scaled')
-    return steer_command[1]
+    if zero_bias
+      eval_model = deepcopy(model)
+      for layer in eval_model.layers
+        if layer isa Dense
+          Flux.params(layer)[2] .= zeros(size(Flux.params(layer)[2]))
+        end
+      end
+      steer_command = eval_model(input_data_scaled')
+      return steer_command[1]
+    else
+      steer_command = model(input_data_scaled')
+      return steer_command[1]
+    end
   end
 
-  function evaluate_manually(model, x)
+  function evaluate_manually(model, x; zero_bias=false)
     for layer in model.layers
       W, b = params(layer)
       W = W'
       b = b'
+      if zero_bias
+        b = zeros(size(b))
+      end
       # println("$(size(W)), $(size(b)), $(layer.σ), $(size(x))")
       if layer.σ == σ
         x = σ.(x * W .+ b)
@@ -375,27 +402,28 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
     return x[1]
   end
 
-  function feedforward_function_manual(input_data)
+  function feedforward_function_manual(input_data; zero_bias=false)
     # Scale the input data using the stored mean and standard deviation values
     input_data_scaled = (input_data .- input_mean) ./ input_std
-    steer_command = evaluate_manually(model, input_data_scaled)
+    steer_command = evaluate_manually(model, input_data_scaled, zero_bias=zero_bias)
     return steer_command
   end
 
-  function test_evaluate_manually(model)
-    vego_range = 0:10:40
-    lataccel_range = -4:2:4
-    latjerk_range = -3:1.5:3
-    latgaccel_range = -2:2
+  function test_evaluate_manually(model; zero_bias=false)
+    vego_range = 0:20:40
+    lataccel_range = -4:4:4
+    latjerk_range = -3:3:3
+    roll_range = -0.2:0.2:0.2
     println("Testing manual model evaluation (as performed in OpenPilot)...")
+    println("Testing with zero bias: $zero_bias")
     test_dict = Dict()
     for vego in vego_range
       for lataccel in lataccel_range
         for latjerk in latjerk_range
-          for latgaccel in latgaccel_range
-            x = Float32[vego lataccel latjerk latgaccel]
-            result_model = feedforward_function(x)  # Model evaluation
-            result_manual = feedforward_function_manual(x)  # Manual evaluation
+          for roll in roll_range
+            x = Float32[vego lataccel latjerk roll]
+            result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
+            result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
             test_dict[f"[{x[1]}, {x[2]}, {x[3]}, {x[4]}]"] = result_model
             if !isapprox(result_model, result_manual, atol=1e-6)
               println("Mismatch at input: $x")
@@ -413,12 +441,13 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.2]
+  example_input = [25 0.5 0.1 0.05]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
   println("Steer manual command @ $example_input: ", steer_command)
 
+  test_dict_zero_bias = test_evaluate_manually(model, zero_bias=true)
   test_dict = test_evaluate_manually(model)
 
   # save model to json for Python import
@@ -426,7 +455,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       W, b = params(model.layers[1])
       input_size = size(W, 2)
       output_size = size(params(model.layers[end])[1], 1)
-      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "test_dict" => test_dict)
+      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "test_dict" => test_dict, "test_dict_zero_bias" => test_dict_zero_bias)
 
       for (idx, layer) in enumerate(model.layers)
           if isa(layer, Dense)
@@ -465,7 +494,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   end
 
   max_abs_lat_jerk = 0.2
-  max_abs_lat_g_accel = 0.2
+  max_abs_roll = 0.05
 
   # Create a function to filter the dataset based on speed
   function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false)
@@ -476,7 +505,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       X, y = X[indices, :], y[indices]
     end
     if no_roll
-      indices = findall(abs.(X[:, 4]) .< max_abs_lat_g_accel)
+      indices = findall(abs.(X[:, 4]) .< max_abs_roll)
       X, y = X[indices, :], y[indices]
     end
     return X, y
@@ -523,7 +552,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |lat g accel| < {max_abs_lat_g_accel:.2G}")
+      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |roll| < {max_abs_roll:.2G}")
     else
       title!(p[si,plot_col_num], f"{speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph")
     end
@@ -548,7 +577,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 2], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=:green, markeralpha=0.2, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
 
     # Plot the model output
-    for gla in -1:0.5:1
+    for gla in -0.1:0.05:0.1
       x_model = []
       y_model = []
       for la in lateral_acceleration_range
@@ -558,7 +587,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           push!(x_model, la)
           push!(y_model, steer_command)
       end
-      plot!(p[si,plot_col_num], x_model, y_model, label="lat_g_accel = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
+      plot!(p[si,plot_col_num], x_model, y_model, label="roll = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
     end
 
     # Configure the plot's appearance
@@ -576,9 +605,9 @@ end
 
 function main()
   
-  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_v1.feather", true)
+  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_large_v1.feather", true)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", false, data)
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", true, data)
   
   test_plot_model(model, "/Users/haiiro/NoSync/voltlat", X_train, y_train, X_test, y_test, input_mean, input_std)
   
