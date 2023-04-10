@@ -50,11 +50,12 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
   end
   # data = CSV.read(infile, DataFrame)
   data = Feather.read(infile)
+  println(f"Loaded {nrow(data)} rows")
+  println(f"{data[1:5, :]}")
   if !use_existing_data
     # Remove rows with missing data
     data = data[completecases(data), :]
 
-    println(f"Loaded {nrow(data)} rows")
 
     # Save the data to a feather file
     println("Saving data to feather file")
@@ -153,7 +154,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   dataX = copy(data)
   select!(dataX, Not([:steer_cmd]))
-  print(names(dataX))
+  println(names(dataX))
   
   # split into independent an dependent variables
   X = Matrix(dataX)
@@ -207,12 +208,12 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   # Define the range of values for each independent variable
   v_ego_range = range(0, stop=40, length=8)
-  lateral_acceleration_range = range(-4, stop=4, length=11)
-  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
+  lateral_acceleration_range = range(-4, stop=4, length=7)
+  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=7)
   lateral_jerk_range = range(-3, stop=3, length=5)
   lateral_jerk_range_hi = range(-2.99, stop=3.01, length=5)
-  lateral_gravitational_acceleration_range = range(-0.25, stop=0.25, length=15)
-  lateral_gravitational_acceleration_range_hi = range(-0.245, stop=0.255, length=15)
+  lateral_gravitational_acceleration_range = range(-0.25, stop=0.25, length=9)
+  lateral_gravitational_acceleration_range_hi = range(-0.245, stop=0.255, length=9)
 
   # Create a regular grid of points using Iterators.product
   grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
@@ -417,7 +418,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.2 0 0 0 0 0 0 0 0 0 0 0 0]
+  example_input = [25 0.5 0.1 0.2 0.5 0.5 0.5 0.5 0.1 0.1 0.1 0.1 0.2 0.2 0.2 0.2]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
