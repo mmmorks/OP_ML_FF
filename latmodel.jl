@@ -72,7 +72,7 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     # setup bins
     nbins = 80
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 3 
+    sample_size = 20
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
@@ -196,8 +196,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       Dense(32, 16, sigmoid),
       Dense(16, 8, sigmoid),
       Dense(8, 4, sigmoid),
-      Dense(4, 2),
-      Dense(2, 1)
+      Dense(4, 1)
   )
 
   # Define the loss function, which includes penalties to enforce physically correct behavior
@@ -260,8 +259,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
     odd_loss += sum(abs.(model_grid .+ model((x' * d_odd_eye)')))
 
     # Total loss with penalty weights λ1 and λ2
-    λ1 = 0.03
-    λ2 = 0.00015
+    λ1 = 0.007
+    λ2 = 0.00007
 
     return λ1 * monotonicity_loss + λ2 * odd_loss
   end
@@ -293,7 +292,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   Δloss_last = 0.0
   loss_last = Inf
   loss_cur = 0.0
-  stall_check_count = 16
+  stall_check_count = 24
   stall_count = 0
   epoch = 1
   epoch_max = log10(size(X_train, 1)) > 6 ? 150 : 1000
