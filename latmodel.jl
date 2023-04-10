@@ -79,7 +79,7 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     # setup bins
     nbins = 80
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 10
+    sample_size = 50
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
@@ -271,8 +271,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
     odd_loss += sum(abs.(model_grid .+ model((x' * d_odd_eye)')))
 
     # Total loss with penalty weights λ1 and λ2
-    λ1 = 0.007
-    λ2 = 0.00007
+    λ1 = 0.009
+    λ2 = 0.00009
 
     return λ1 * monotonicity_loss + λ2 * odd_loss
   end
@@ -304,7 +304,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   Δloss_last = 0.0
   loss_last = Inf
   loss_cur = 0.0
-  stall_check_count = 25
+  stall_check_count = 15
   stall_count = 0
   epoch = 1
   epoch_max = log10(size(X_train, 1)) > 6 ? 150 : 1000
@@ -349,7 +349,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
                 cur_time = Dates.format(now(), "HH:MM:SS")
-                println(f"{cur_time} Epoch: {epoch:3d} (of {epoch_max}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
+                println(f"{cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
@@ -605,9 +605,9 @@ end
 
 function main()
   
-  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_large_v1.feather", true)
+  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_large1_v1.feather", true)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", true, data)
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", false, data)
   
   test_plot_model(model, "/Users/haiiro/NoSync/voltlat", X_train, y_train, X_test, y_test, input_mean, input_std)
   
