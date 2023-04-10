@@ -67,12 +67,12 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     mm_steer_cmd = [-2.0, 2.0]
     mm_lateral_accel = [-4.45, 4.45]
     mm_lateral_accel_rate_no_roll = [-2.95, 2.95]
-    mm_roll = [-2.95, 2.95]
+    mm_roll = [-0.25, 0.25]
 
     # setup bins
     nbins = 80
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 20
+    sample_size = 50
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
@@ -150,9 +150,13 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   select!(data, Not([:lateral_accel_bins]))
   select!(data, Not([:lateral_accel_rate_no_roll_bins]))
   select!(data, Not([:roll_bins]))
+
+  dataX = copy(data)
+  select!(dataX, Not([:steer_cmd]))
+  print(names(dataX))
   
   # split into independent an dependent variables
-  X = Matrix(data[:, 1:end-1])  # Assuming the last column is the dependent_var
+  X = Matrix(dataX)
   y = data[:, :steer_cmd];
 
   # Calculate the mean and standard deviation of the input features
@@ -160,31 +164,31 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   input_std = std(X, dims=1)
 
   # Create a copy of the DataFrames with the signs of steer_cmd, lateral_accel, lateral_jerk, and roll reversed to make the data symmetric
-  old_size = size(train, 1)
-  println("Training data before copying symmmetric data: $old_size")
-  data_sym = copy(train)
-  data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
-  data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
-  data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
-  data_sym[!, :roll] = -1 .* data_sym[!, :roll]
-  train = vcat(train, data_sym)
-  println("Training data after copying symmmetric data: $(size(train,1))")
+  # old_size = size(train, 1)
+  # println("Training data before copying symmmetric data: $old_size")
+  # data_sym = copy(train)
+  # cols_to_flip = setdiff(names(data_sym), [:v_ego])
+  # data_sym[!, cols_to_flip] .= .*(-1, data_sym[!, cols_to_flip])
+  # train = vcat(train, data_sym)
+  # println("Training data after copying symmmetric data: $(size(train,1))")
 
-  old_size = size(test, 1)
-  println("Test data before copying symmmetric data: $old_size")
-  data_sym = copy(test)
-  data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
-  data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
-  data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
-  data_sym[!, :roll] = -1 .* data_sym[!, :roll]
-  test = vcat(test, data_sym)
-  println("Test data after copying symmmetric data: $(size(test,1))")
+  # old_size = size(test, 1)
+  # println("Test data before copying symmmetric data: $old_size")
+  # data_sym = copy(test)
+  # cols_to_flip = setdiff(names(data_sym), [:v_ego])
+  # data_sym[!, cols_to_flip] .= .*(-1, data_sym[!, cols_to_flip])
+  # test = vcat(test, data_sym)
+  # println("Test data after copying symmmetric data: $(size(test,1))")
 
   # normalize the data
-  X_train = Matrix(train[:, 1:end-1])
+  trainX = copy(train)
+  select!(trainX, Not([:steer_cmd]))
+  X_train = Matrix(trainX)
   X_train = (X_train .- input_mean) ./ input_std;
   y_train = train[:, "steer_cmd"];
-  X_test = Matrix(test[:, 1:end-1])
+  testX = copy(test)
+  select!(testX, Not([:steer_cmd]))
+  X_test = Matrix(testX)
   X_test = (X_test .- input_mean) ./ input_std;
   y_test = test[:, "steer_cmd"];
 
@@ -192,10 +196,10 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   # Define the model
   model = Chain(
-      Dense(input_dim, 32, sigmoid),
+      Dense(input_dim, 64, sigmoid),
+      Dense(64, 32, sigmoid),
       Dense(32, 16, sigmoid),
-      Dense(16, 8, sigmoid),
-      Dense(8, 4, sigmoid),
+      Dense(16, 4, sigmoid),
       Dense(4, 1)
   )
 
@@ -207,21 +211,21 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
   lateral_jerk_range = range(-3, stop=3, length=5)
   lateral_jerk_range_hi = range(-2.99, stop=3.01, length=5)
-  lateral_gravitational_acceleration_range = range(-2, stop=2, length=15)
-  lateral_gravitational_acceleration_range_hi = range(-1.99, stop=2.01, length=15)
+  lateral_gravitational_acceleration_range = range(-0.25, stop=0.25, length=15)
+  lateral_gravitational_acceleration_range_hi = range(-0.245, stop=0.255, length=15)
 
   # Create a regular grid of points using Iterators.product
-  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range)]...)
-  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, lateral_gravitational_acceleration_range)]...)
-  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, lateral_gravitational_acceleration_range)]...)
-  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range_hi)]...)
-  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -lateral_gravitational_acceleration_range)]...)
+  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
+  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
+  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
+  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range_hi, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
+  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
 
   println(typeof(grid))
   println(typeof(X_test))
 
-  d_odd_eye = Matrix{Float64}(I, 4, 4)
-  for i in 2:4
+  d_odd_eye = Matrix{Float64}(I, 16, 16)
+  for i in 2:16
       d_odd_eye[i,i] = -1.0
   end
 
@@ -413,7 +417,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.2]
+  example_input = [25 0.5 0.1 0.2 0 0 0 0 0 0 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -576,7 +580,7 @@ end
 
 function main()
   
-  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_v1.feather", true)
+  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_small.feather", false)
 
   model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", false, data)
   
