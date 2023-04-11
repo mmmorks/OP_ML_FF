@@ -39,6 +39,7 @@ using SplitApplyCombine
 using InvertedIndices
 using JSON
 using Feather
+using Dates
 
 function load_data(infile::String, use_existing_data::Bool)::DataFrame
   # Load the data into a DataFrame
@@ -288,8 +289,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   opt = Flux.AdaGrad()
 
   # train the model (with batches of shuffled data)
-  tol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-5
-  Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-5
+  tol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-7
+  Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-7
   logstep = log10(size(X_train, 1)) > 7 ? 3 : 10
   logstepgrowth = 1
   logstepfloat = Float64(logstep)
@@ -343,7 +344,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
             if abs(Δloss) > tol || abs(Δloss_last) > Δtol
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
-                println(f"Epoch: {epoch:3d} (of {epoch_max}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
+                cur_time = Dates.format(now(), "HH:MM:SS")
+                println(f"{cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G},  Test loss: {loss(X_test', y_test):.6f}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
@@ -400,10 +402,10 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       for lataccel in lataccel_range
         for latjerk in latjerk_range
           for latgaccel in latgaccel_range
-            x = Float32[vego lataccel latjerk latgaccel]
+            x = hcat(Float32[vego lataccel latjerk latgaccel], [0 0 0 0 0 0 0 0 0 0 0 0])
             result_model = feedforward_function(x)  # Model evaluation
             result_manual = feedforward_function_manual(x)  # Manual evaluation
-            test_dict[f"[{x[1]}, {x[2]}, {x[3]}, {x[4]}]"] = result_model
+            test_dict[f"[{x[1]}, {x[2]}, {x[3]}, {x[4]} 0 0 0 0 0 0 0 0 0 0 0 0]"] = result_model
             if !isapprox(result_model, result_manual, atol=1e-6)
               println("Mismatch at input: $x")
               println("Model: $result_model, Manual: $result_manual")
@@ -420,7 +422,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.2 0.5 0.5 0.5 0.5 0.1 0.1 0.1 0.1 0.2 0.2 0.2 0.2]
+  example_input = [25 0.5 0.1 0.2 0 0 0 0 0 0 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -518,7 +520,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed la lj 0.0]
+          input_data = [speed la lj 0.0 0 0 0 0 0 0 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -560,7 +562,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed la 0.0 gla]
+          input_data = [speed la 0.0 gla 0 0 0 0 0 0 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
