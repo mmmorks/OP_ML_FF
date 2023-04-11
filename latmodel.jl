@@ -274,9 +274,11 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       y_pred = model(x)
       standard_loss = Flux.mse(y_pred, y')
 
-      total_loss = standard_loss + physical_constraint_losses(x, y_pred)
+      return standard_loss
 
-      return total_loss
+      # total_loss = standard_loss + physical_constraint_losses(x, y_pred)
+
+      # return total_loss
   end
 
 
@@ -581,7 +583,7 @@ end
 
 function main()
   
-  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_small.feather", false)
+  data = load_data("/Users/haiiro/NoSync/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_large.feather", true)
 
   model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/Users/haiiro/NoSync/voltlat", false, data)
   
