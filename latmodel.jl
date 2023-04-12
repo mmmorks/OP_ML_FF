@@ -100,8 +100,6 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
 
     # create a combined column for balancing
     data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins])
-    # binning on all four variables is too sparse
-    # data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins], "_", data[!,:lateral_accel_rate_no_roll_bins], "_", data[!,:roll_bins])
 
 
     # balance the data in parallel
@@ -165,23 +163,6 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   input_mean = mean(X, dims=1)
   input_std = std(X, dims=1)
 
-  # Create a copy of the DataFrames with the signs of steer_cmd, lateral_accel, lateral_jerk, and roll reversed to make the data symmetric
-  # old_size = size(train, 1)
-  # println("Training data before copying symmmetric data: $old_size")
-  # data_sym = copy(train)
-  # cols_to_flip = setdiff(names(data_sym), [:v_ego])
-  # data_sym[!, cols_to_flip] .= .*(-1, data_sym[!, cols_to_flip])
-  # train = vcat(train, data_sym)
-  # println("Training data after copying symmmetric data: $(size(train,1))")
-
-  # old_size = size(test, 1)
-  # println("Test data before copying symmmetric data: $old_size")
-  # data_sym = copy(test)
-  # cols_to_flip = setdiff(names(data_sym), [:v_ego])
-  # data_sym[!, cols_to_flip] .= .*(-1, data_sym[!, cols_to_flip])
-  # test = vcat(test, data_sym)
-  # println("Test data after copying symmmetric data: $(size(test,1))")
-
   # normalize the data
   trainX = copy(train)
   select!(trainX, Not([:steer_cmd]))
@@ -198,10 +179,10 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
   # Define the model
   model = Chain(
-      Dense(input_dim, 64, sigmoid),
-      Dense(64, 32, sigmoid),
+      Dense(input_dim, 32, sigmoid),
       Dense(32, 16, sigmoid),
-      Dense(16, 4, sigmoid),
+      Dense(16, 8, sigmoid),
+      Dense(8, 4),
       Dense(4, 1)
   )
 
@@ -217,11 +198,11 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   lateral_gravitational_acceleration_range_hi = range(-0.245, stop=0.255, length=9)
 
   # Create a regular grid of points using Iterators.product
-  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
-  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
-  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
-  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range_hi, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
-  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -lateral_gravitational_acceleration_range, 0,0,0,0,0,0,0,0,0,0,0,0)]...)
+  grid = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range, 0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0)]...)
+  grid_da = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, lateral_gravitational_acceleration_range, 0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0)]...)
+  grid_dj = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, lateral_gravitational_acceleration_range, 0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0)]...)
+  grid_dg = hcat([collect(x) for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, lateral_gravitational_acceleration_range_hi, 0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0)]...)
+  grid_odd_neg = hcat([collect(x) for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -lateral_gravitational_acceleration_range, 0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0,0:0)]...)
 
   println(typeof(grid))
   println(typeof(X_test))
@@ -268,6 +249,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
     λ1 = 0.007
     λ2 = 0.00007
 
+    # return λ2 * odd_loss
+
     return λ1 * monotonicity_loss + λ2 * odd_loss
   end
 
@@ -275,11 +258,11 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
       y_pred = model(x)
       standard_loss = Flux.mse(y_pred, y')
 
-      return standard_loss
+      # return standard_loss
 
-      # total_loss = standard_loss + physical_constraint_losses(x, y_pred)
+      total_loss = standard_loss + physical_constraint_losses(x, y_pred)
 
-      # return total_loss
+      return total_loss
   end
 
 
@@ -289,8 +272,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   opt = Flux.AdaGrad()
 
   # train the model (with batches of shuffled data)
-  tol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-7
-  Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-7
+  tol = log10(size(X_train, 1)) > 7 ? 1e-4 : 3e-6
+  Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 3e-6
   logstep = log10(size(X_train, 1)) > 7 ? 3 : 10
   logstepgrowth = 1
   logstepfloat = Float64(logstep)
@@ -300,18 +283,13 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   Δloss_last = 0.0
   loss_last = Inf
   loss_cur = 0.0
-  stall_check_count = 24
+  stall_check_count = 10
   stall_count = 0
   epoch = 1
   epoch_max = log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 500
   train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)
-
-  # X_train = Array{Float64}(X_train)
-  # y_train = Array{Float64}(y_train)
-  # X_test = Array{Float64}(X_test)
-  # y_test = Array{Float64}(y_test)
 
   println(size(X_train))
   println(size(y_train))
@@ -377,6 +355,8 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
         x = identity.(x * W .+ b)
       elseif layer.σ == tanh
         x = tanh.(x * W .+ b)
+      elseif layer.σ == leakyrelu
+        x = leakyrelu.(x * W .+ b)
       else
         throw(ArgumentError("Unsupported activation function"))
       end
@@ -422,7 +402,7 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.2 0 0 0 0 0 0 0 0 0 0 0 0]
+  example_input = [25 0.5 0.1 0.02 0 0 0 0 0 0 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -474,7 +454,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   end
 
   max_abs_lat_jerk = 0.2
-  max_abs_lat_g_accel = 0.2
+  max_abs_lat_g_accel = 0.01
 
   # Create a function to filter the dataset based on speed
   function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false)
@@ -557,7 +537,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 2], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=:green, markeralpha=0.2, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
 
     # Plot the model output
-    for gla in -1:0.5:1
+    for gla in -0.1:0.05:0.1
       x_model = []
       y_model = []
       for la in lateral_acceleration_range
@@ -567,7 +547,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           push!(x_model, la)
           push!(y_model, steer_command)
       end
-      plot!(p[si,plot_col_num], x_model, y_model, label="lat_g_accel = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
+      plot!(p[si,plot_col_num], x_model, y_model, label="roll = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
     end
 
     # Configure the plot's appearance
