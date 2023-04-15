@@ -41,8 +41,33 @@ using JSON
 using Feather
 using Dates
 using CUDA
+using ArgParse
 
-function load_data(infile::String, use_existing_data::Bool)::DataFrame
+
+function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString)
+  full_path = joinpath(path, folder_name)
+  i = 1
+  while isdir(full_path)
+      folder_name_with_iterator = string(folder_name, "_", i)
+      full_path = joinpath(path, folder_name_with_iterator)
+      i += 1
+  end
+  mkdir(full_path)
+  return full_path
+end
+
+function describe(arr)
+  n = length(arr)
+  μ = mean(arr)
+  σ = std(arr)
+  minimum_value = minimum(arr)
+  maximum_value = maximum(arr)
+  quartiles = quantile(arr, [0.25, 0.5, 0.75])
+  
+  return "n: $n, mean: $μ, std: $σ, min: $minimum_value, max: $maximum_value, 25%: $(quartiles[1]), 50%: $(quartiles[2]), 75%: $(quartiles[3])"
+end
+
+function load_data(infile::String, use_existing_data::Bool, outdir::String)::DataFrame
   # Load the data into a DataFrame
   if use_existing_data
     # infile = replace(infile, ".csv" => "_balanced.csv")
@@ -62,7 +87,9 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     # println(f"Loaded data: {names(data)}")
     println(f"Data {data[1:5, :]}")
     for col in names(data)
-      println(f"Min and max of column {col}: {minimum(data[:,col])}, {maximum(data[:,col])}")
+      if typeof(data[1, col]) == Float64
+        println("$col: $(describe(collect(data[:,col])))")
+      end
     end
 
     # Save the data to a feather file
@@ -71,8 +98,10 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
 
     println("Filtering out extreme values")
 
+    min_vego = minimum(data[!, :v_ego])
+
     # setup bin ranges
-    mm_v_ego = [2.0, 45.0]
+    mm_v_ego = [0.1, 45.0]
     mm_steer_cmd = [-2.0, 2.0]
     mm_lateral_accel = [-4.1, 4.1]
     mm_lateral_jerk = [-5.0, 5.0]
@@ -109,6 +138,12 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     # data = filter(row -> abs(row.a_ego) < 2.95, data)
     # select!(data, Not([:a_ego])) # remove a_ego because it's not used in the model; no good correlations found
     println(f"{nrow(data)} rows after filtering")
+
+    for col in names(data)
+      if typeof(data[1, col]) == Float64
+        println("$col: $(describe(collect(data[:,col])))")
+      end
+    end
 
     println(f"Calculating bins")
     data[!, :v_ego_bins] = cut(data[!, :v_ego], mm_v_ego[1]:step_v_ego:mm_v_ego[2])
@@ -171,8 +206,14 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
     data = vcat(flattened_sampled_bin_data...)
     println(f"Num points after final balancing: {nrow(data)}")
 
+    for col in names(data)
+      if typeof(data[1, col]) == Float64
+        println("$col: $(describe(collect(data[:,col])))")
+      end
+    end
+
     # CSV.write(joinpath(dirname(infile), replace(infile, ".csv" => "_balanced.csv")), data)
-    Feather.write(joinpath(dirname(infile), replace(infile, ".feather" => "_balanced.feather")), data)
+    Feather.write(joinpath(outdir, replace(infile, ".feather" => "_balanced.feather")), data)
   else
     println("Loading preprocessed data...")
   end
@@ -180,7 +221,9 @@ function load_data(infile::String, use_existing_data::Bool)::DataFrame
   return data
 end
 
-function train_model(model_path::String, use_existing_model::Bool, data::DataFrame)::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test), Tuple{Flux.Chain, Matrix{Float64}, Matrix{Float64}, Matrix{Float64}, Vector{Float64}, Matrix{Float64}, Vector{Float64}}}
+function train_model(working_dir::String, use_existing_model::Bool, data::DataFrame)::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test), Tuple{Flux.Chain, Matrix{Float32}, Matrix{Float32}, Matrix{Float32}, Vector{Float32}, Matrix{Float32}, Vector{Float32}}}
+  model_path = joinpath(working_dir, Base.basename(working_dir))
+
   # split into train and test sets
   train, test = stratifiedobs(row->row[:combined_column], data, p = 0.8)
 
@@ -200,25 +243,25 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   input_std = std(X, dims=1)
 
   # Create a copy of the DataFrames with the signs of steer_cmd, lateral_accel, lateral_jerk, and roll reversed to make the data symmetric
-  # old_size = size(train, 1)
-  # println("Training data before copying symmmetric data: $old_size")
-  # data_sym = copy(train)
-  # data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
-  # data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
-  # data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
-  # data_sym[!, :roll] = -1 .* data_sym[!, :roll]
-  # train = vcat(train, data_sym)
-  # println("Training data after copying symmmetric data: $(size(train,1))")
+  old_size = size(train, 1)
+  println("Training data before copying symmmetric data: $old_size")
+  data_sym = deepcopy(train)
+  data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
+  data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
+  data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
+  data_sym[!, :roll] = -1 .* data_sym[!, :roll]
+  train = vcat(train, data_sym)
+  println("Training data after copying symmmetric data: $(size(train,1))")
 
-  # old_size = size(test, 1)
-  # println("Test data before copying symmmetric data: $old_size")
-  # data_sym = copy(test)
-  # data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
-  # data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
-  # data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
-  # data_sym[!, :roll] = -1 .* data_sym[!, :roll]
-  # test = vcat(test, data_sym)
-  # println("Test data after copying symmmetric data: $(size(test,1))")
+  old_size = size(test, 1)
+  println("Test data before copying symmmetric data: $old_size")
+  data_sym = deepcopy(test)
+  data_sym[!, :steer_cmd] = -1 .* data_sym[!, :steer_cmd]
+  data_sym[!, :lateral_accel] = -1 .* data_sym[!, :lateral_accel]
+  data_sym[!, :lateral_jerk] = -1 .* data_sym[!, :lateral_jerk]
+  data_sym[!, :roll] = -1 .* data_sym[!, :roll]
+  test = vcat(test, data_sym)
+  println("Test data after copying symmmetric data: $(size(test,1))")
 
   device = CUDA.functional() ? gpu : cpu
   println("Using device: $(device)")
@@ -228,118 +271,122 @@ function train_model(model_path::String, use_existing_model::Bool, data::DataFra
   X_train = Matrix(select(train, Not([:steer_cmd])))
   println("$(train[1, :])")
   println("as matrix: $(X_train[1, :])")
-  X_train = (X_train .- input_mean) ./ input_std |> device
+  X_train = (X_train .- input_mean) ./ input_std
+  X_train = Array{Float32}(X_train) |> device
   println("normalized $(X_train[1, :])")
-  y_train = train[:, "steer_cmd"] |> device
+  y_train = train[:, "steer_cmd"]
+  y_train = Array{Float32}(y_train) |> device
   println("steer cmd: $(y_train[1])")
   X_test = Matrix(select(test, Not([:steer_cmd])))
-  X_test = (X_test .- input_mean) ./ input_std #|> device
-  y_test = test[:, "steer_cmd"] #|> device
-
+  X_test = (X_test .- input_mean) ./ input_std
+  X_test = Array{Float32}(X_test) #|> device
+  y_test = test[:, "steer_cmd"]
+  y_test = Array{Float32}(y_test) #|> device
 
   input_dim = size(X_train, 2)
 
   # Define the model
   model = Chain(
-      Dense(input_dim, 32, sigmoid),
-      Dense(32, 16, sigmoid),
-      Dense(16, 8, sigmoid),
-      Dense(8, 4, sigmoid),
-      Dense(4, 1)
+      Dense(input_dim, 8, sigmoid),
+      Dense(8, 16, sigmoid),
+      Dense(16, 16),
+      Dense(16, 1)
   ) |> device
 
   # Define the loss function, which includes penalties to enforce physically correct behavior
 
   # Define the range of values for each independent variable
-  v_ego_range = range(0, stop=40, length=14)
-  lateral_acceleration_range = range(-4, stop=4, length=11)
-  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
-  lateral_jerk_range = range(-3, stop=3, length=15)
-  lateral_jerk_range_hi = range(-2.99, stop=3.01, length=15)
-  roll_range = range(-0.2, stop=0.2, length=21)
-  roll_range_hi = range(-0.195, stop=0.205, length=21)
+  # v_ego_range = range(0, stop=40, length=14)
+  # lateral_acceleration_range = range(-4, stop=4, length=11)
+  # lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
+  # lateral_jerk_range = range(-3, stop=3, length=15)
+  # lateral_jerk_range_hi = range(-2.99, stop=3.01, length=15)
+  # roll_range = range(-0.2, stop=0.2, length=21)
+  # roll_range_hi = range(-0.195, stop=0.205, length=21)
 
-  # Create a regular grid of points using Iterators.product
-  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)]...) |> device
-  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)]...) |> device
-  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)]...) |> device
-  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)]...) |> device
-  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)]...) |> device
+  # # Create a regular grid of points using Iterators.product
+  # grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)]...) |> device
+  # grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)]...) |> device
+  # grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)]...) |> device
+  # grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)]...) |> device
+  # grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)]...) |> device
 
-  println(typeof(grid))
-  println(typeof(X_test))
+  # println(typeof(grid))
+  # println(typeof(X_test))
 
-  d_odd_eye_cpu = Matrix{Float64}(I, 4, 4)
-  for i in 2:4
-    d_odd_eye_cpu[i,i] = -1.0
-  end
+  # d_odd_eye_cpu = Matrix{Float32}(I, 4, 4)
+  # for i in 2:4
+  #   d_odd_eye_cpu[i,i] = -1.0
+  # end
 
-  d_odd_eye = device(d_odd_eye_cpu)
+  # d_odd_eye = device(d_odd_eye_cpu)
 
-  function shift_column(matrix::Matrix, column_index::Int, shift::Float64)
-      rows, cols = size(matrix)
-      if cols != 4
-          error("The input matrix should have 4 columns.")
-      end
+  # function shift_column(matrix::Matrix, column_index::Int, shift::Float32)
+  #     rows, cols = size(matrix)
+  #     if cols != 4
+  #         error("The input matrix should have 4 columns.")
+  #     end
 
-      if column_index < 1 || column_index > 4
-          error("Invalid column index. It should be between 1 and 4.")
-      end
+  #     if column_index < 1 || column_index > 4
+  #         error("Invalid column index. It should be between 1 and 4.")
+  #     end
 
-      # Create a Nx4 matrix with the shift value at the desired position
-      shift_matrix = zeros(Float64, rows, cols)
-      shift_matrix[:, column_index] .= shift
+  #     # Create a Nx4 matrix with the shift value at the desired position
+  #     shift_matrix = zeros(Float32, rows, cols)
+  #     shift_matrix[:, column_index] .= shift
 
-      # Perform matrix addition to shift the specified column
-      return matrix + shift_matrix
-  end
+  #     # Perform matrix addition to shift the specified column
+  #     return matrix + shift_matrix
+  # end
 
-  function physical_constraint_losses(x, y_pred)
-      model_grid = model(grid)
-      model_da = model(grid_da)
-      model_dj = model(grid_dj)
-      model_dg = model(grid_dg)
-      model_odd_neg = model(grid_odd_neg)
+  # function physical_constraint_losses(x, y_pred)
+  #     model_grid = model(grid)
+  #     model_da = model(grid_da)
+  #     model_dj = model(grid_dj)
+  #     model_dg = model(grid_dg)
+  #     model_odd_neg = model(grid_odd_neg)
 
-      monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
-                          sum(max.(0, (model_dj .- model_grid) .* -1)) +
-                          sum(max.(0, (model_dg .- model_grid) .* -1))
+  #     monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
+  #                         sum(max.(0, (model_dj .- model_grid) .* -1)) +
+  #                         sum(max.(0, (model_dg .- model_grid) .* -1))
 
-      odd_loss = sum(abs.(model_grid .+ model_odd_neg))
+  #     odd_loss = sum(abs.(model_grid .+ model_odd_neg))
 
-      # Apply the d_odd_eye transformation to x
-      # transformed_x = (x' * d_odd_eye)'
+  #     # Apply the d_odd_eye transformation to x
+  #     # transformed_x = (x' * d_odd_eye)'
 
-      # # Compute the model output for transformed_x
-      # transformed_y_pred = model(transformed_x)
+  #     # # Compute the model output for transformed_x
+  #     # transformed_y_pred = model(transformed_x)
 
-      # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
+  #     # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
 
-      # Total loss with penalty weights λ1 and λ2
-      λ1 = 0.0002
-      λ2 = 0.00002
+  #     # Total loss with penalty weights λ1 and λ2
+  #     λ1 = 0.0002
+  #     λ2 = 0.00002
 
-      # return λ2 * odd_loss
-      return λ1 * monotonicity_loss + λ2 * odd_loss
-  end
+  #     # return λ2 * odd_loss
+  #     return λ1 * monotonicity_loss + λ2 * odd_loss
+  # end
 
-  function loss1(x, y)
-      y_pred = model(x)
-      standard_loss = Flux.mse(y_pred, y')
+  # function loss1(x, y)
+  #     y_pred = model(x)
+  #     standard_loss = Flux.mse(y_pred, y')
 
-      # return standard_loss
+  #     # return standard_loss
 
-      total_loss = standard_loss + physical_constraint_losses(x, y_pred)
+  #     total_loss = standard_loss + physical_constraint_losses(x, y_pred)
 
-      return total_loss
-  end
+  #     return total_loss
+  # end
 
-  function loss(x, y)
-    y_pred = model(x)
-    standard_loss = Flux.mse(y_pred, y')
+  # function loss(x, y)
+  #     y_pred = model(x)
+  #     standard_loss = Flux.mse(y_pred, y')
 
-    return standard_loss
-end
+  #     return standard_loss
+  # end
+
+  loss(x, y) = Flux.mse(model(x), y')
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -351,7 +398,7 @@ end
   Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-5
   logstep = device == gpu ? 50 : log10(size(X_train, 1)) > 7 ? 3 : 10
   logstepgrowth = 1
-  logstepfloat = Float64(logstep)
+  logstepfloat = Float32(logstep)
   logstepbig = 10
   Δloss = Inf
   ΔΔloss = Inf
@@ -361,15 +408,11 @@ end
   stall_check_count = device == gpu ? 50 : 15
   stall_count = 0
   epoch = 1
-  epoch_max = device == gpu ? 5000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 10000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 1000
   train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)
 
-  # X_train = Array{Float64}(X_train)
-  # y_train = Array{Float64}(y_train)
-  # X_test = Array{Float64}(X_test)
-  # y_test = Array{Float64}(y_test)
 
   println(size(X_train))
   println(size(y_train))
@@ -418,7 +461,7 @@ end
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
                 cur_time = Dates.format(now(), "HH:MM:SS")
-                println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G}")
+                println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
@@ -483,12 +526,12 @@ end
       X_test = cpu(X_test)
       y_test = cpu(y_test)
       model = cpu(model)
-      grid = cpu(grid)
-      grid_da = cpu(grid_da)
-      grid_dj = cpu(grid_dj)
-      grid_dg = cpu(grid_dg)
-      grid_odd_neg = cpu(grid_odd_neg)
-      d_odd_eye = cpu(d_odd_eye)
+      # grid = cpu(grid)
+      # grid_da = cpu(grid_da)
+      # grid_dj = cpu(grid_dj)
+      # grid_dg = cpu(grid_dg)
+      # grid_odd_neg = cpu(grid_odd_neg)
+      # d_odd_eye = cpu(d_odd_eye)
     end
 
     @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
@@ -529,8 +572,15 @@ end
         x = identity.(x * W .+ b)
       elseif layer.σ == tanh
         x = tanh.(x * W .+ b)
+      elseif layer.σ == leakyrelu
+        x = leakyrelu.(x * W .+ b)
       else
-        throw(ArgumentError("Unsupported activation function"))
+        try
+          x = layer.σ.(x * W .+ b)
+        catch e
+          println("Unsupported activation function: $(layer.σ)")
+          rethrow(e)
+        end
       end
     end
     return x[1]
@@ -584,12 +634,16 @@ end
   test_dict_zero_bias = test_evaluate_manually(model, zero_bias=true)
   test_dict = test_evaluate_manually(model)
 
+  current_date_and_time = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+
+  model_test_loss = loss(X_test', y_test)
+
   # save model to json for Python import
-  function export_model_params_to_json(model::Chain, input_mean::Matrix{Float64}, input_std::Matrix{Float64}, filename::String, test_dict)
+  function export_model_params_to_json(model::Chain, input_mean::Matrix{Float32}, input_std::Matrix{Float32}, filename::String, test_dict, test_dict_zero_bias, current_date_and_time, model_test_loss)
       W, b = params(model.layers[1])
       input_size = size(W, 2)
       output_size = size(params(model.layers[end])[1], 1)
-      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "test_dict" => test_dict, "test_dict_zero_bias" => test_dict_zero_bias)
+      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "test_dict" => test_dict, "test_dict_zero_bias" => test_dict_zero_bias, "current_date_and_time" => current_date_and_time, "model_test_loss" => model_test_loss)
 
       for (idx, layer) in enumerate(model.layers)
           if isa(layer, Dense)
@@ -607,7 +661,7 @@ end
       end
   end
 
-  export_model_params_to_json(model, Matrix{Float64}(input_mean), Matrix{Float64}(input_std), "$model_path.json", test_dict)
+  export_model_params_to_json(model, Matrix{Float32}(input_mean), Matrix{Float32}(input_std), "$model_path.json", test_dict, test_dict_zero_bias, current_date_and_time, model_test_loss)
 
 
   # Evaluate the model on the test set 
@@ -618,7 +672,9 @@ end
 
 end
 
-function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{Float64}, y_train::Vector{Float64}, X_test::Matrix{Float64}, y_test::Vector{Float64}, input_mean::Matrix{Float64}, input_std::Matrix{Float64})
+function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{Float32}, y_train::Vector{Float32}, X_test::Matrix{Float32}, y_test::Vector{Float32}, input_mean::Matrix{Float32}, input_std::Matrix{Float32})
+
+  car_name = Base.basename(plot_path)
 
   function feedforward_function(input_data)
     # Scale the input data using the stored mean and standard deviation values
@@ -686,7 +742,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Steer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |roll| < {max_abs_roll:.2G}")
+      title!(p[1,plot_col_num], f"{car_name}\nSteer vs. a_lat at {speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} @ |roll| < {max_abs_roll:.2G}")
     else
       title!(p[si,plot_col_num], f"{speed*2.24:.2G}-{(speed+speed_step)*2.24:.2G} mph")
     end
@@ -733,21 +789,44 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   end
   xlabel!(p[size(collect(speed_range),1),plot_col_num], "a_lat (m/s²)")
   # Display the plot
-  savefig(p, "$plot_path.png")
+  savefig(p, "$plot_path/$car_name.png")
   display(p)
 end
 
-function main()
+function create_model(in_file, out_dir_base)
+  carname = replace(Base.basename(in_file), ".feather" => "")
+  outdir = create_folder_with_iterator(out_dir_base, carname)
+  preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
+  use_existing_input = false
+  if isfile(preprocess_infile) && stat(in_file).mtime < stat(preprocess_infile).mtime
+      use_existing_input = true
+      return
+  end
   
-  data = load_data("/mnt/video/scratch-video/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017_v1.feather", false)
+  data = load_data(in_file, use_existing_input, outdir)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model("/mnt/video/scratch-video/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017", false, data)
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model(outdir, false, data)
   
-  test_plot_model(model, "/mnt/video/scratch-video/latfiles/gm/CHEVROLET VOLT PREMIER 2018/CHEVROLET VOLT PREMIER 2017", X_train, y_train, X_test, y_test, input_mean, input_std)
-  
+  test_plot_model(model, outdir, X_train, y_train, X_test, y_test, input_mean, input_std)
 end
 
+function main(in_dir)
+  for in_file in readdir(in_dir)
+    if occursin(".feather", in_file) && !occursin("_balanced.feather", in_file)
+      println("Processing $in_file")
+      create_model(joinpath(in_dir, in_file), in_dir)
+    end
+  end
+end
 
-main()
+# parser = ArgParse.ArgParser("Train a model from a feather file of [vego, lat_accel, lat_jerk, roll, steer_torque] that will predict steer_torque from [vego, lat_accel, lat_jerk, roll]") 
+
+# add_argument(parser, "--input-dir", help="Input directory full of feather files", required=true)
+
+# args = parse_args(parser)
+
+# main(args["input-dir"])
+
+main("/mnt/video/scratch-video/latmodels")
 
 
