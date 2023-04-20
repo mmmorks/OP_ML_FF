@@ -345,17 +345,26 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   # end
 
   function physical_constraint_losses(x, y_pred, λ1, λ2)
+      if λ1 == 0 && λ2 == 0
+          return 0.0
+      end
+      monotonicity_loss = 0.0
+      odd_loss = 0.0
+
       model_grid = model(grid)
-      model_da = model(grid_da)
-      model_dj = model(grid_dj)
-      model_dg = model(grid_dg)
-      model_odd_neg = model(grid_odd_neg)
+      if λ1 != 0.0
+          model_da = model(grid_da)
+          model_dj = model(grid_dj)
+          model_dg = model(grid_dg)
 
-      monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
-                          sum(max.(0, (model_dj .- model_grid) .* -1)) +
-                          sum(max.(0, (model_dg .- model_grid) .* -1))
-
-      odd_loss = sum(abs.(model_grid .+ model_odd_neg))
+          monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
+                              sum(max.(0, (model_dj .- model_grid) .* -1)) +
+                              sum(max.(0, (model_dg .- model_grid) .* -1))
+      end
+      if λ2 != 0.0
+          model_odd_neg = model(grid_odd_neg)
+          odd_loss = sum(abs.(model_grid .+ model_odd_neg))
+      end
 
       # Apply the d_odd_eye transformation to x
       # transformed_x = (x' * d_odd_eye)'
@@ -391,44 +400,53 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   #     return standard_loss
   # end
 
+  function temporary_model_with_params(model, params)
+      temp_model = deepcopy(model)
+      Flux.loadparams!(temp_model, params)
+      return temp_model
+  end
+
   function combined_loss(x, y_true, y_pred, model, λ, λ1, λ2)
       mse = Flux.Losses.mse(y_true, y_pred)
-      l2 = sum(p -> sum(abs2, p), params(model)) * λ
+      l2 = λ == 0.0 ? 0.0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ1, λ2)
       return mse + l2 + physical_constraints
   end
 
-  loss(x, y, λ=0.0, λ1=0.0, λ2=0.00002) = combined_loss(x, y', model(x), model, λ, λ1, λ2)
+  loss(x, y, model, λ=0.0, λ1=0.0, λ2=0.0) = combined_loss(x, y', model(x), model, λ, λ1, λ2)
 
-  loss_ps = 
 
   # loss(x, y) = Flux.mse(model(x), y')
 
-  function simulated_annealing(model, loss, x, y, T0, alpha, iter)
+  function simulated_annealing!(model, loss, x, y, T0, alpha, iter)
       params = Flux.params(model)
       best_params = deepcopy(params)
-      best_loss = loss(x, y, params)
+      best_loss = loss(x, y, model)
 
       T = T0
       for i in 1:iter
-          new_params = map(p -> p + 0.1 * randn(size(p)), params)
-          new_loss = loss(x, y, new_params)
+          new_params = [p .+ 0.05f0 .* CUDA.randn(Float32, size(p)) for p in params]
+          temp_model = temporary_model_with_params(model, new_params)
+          new_loss = loss(x, y, temp_model)
 
           if new_loss < best_loss || exp((best_loss - new_loss) / T) > rand()
-              params .= new_params
+              params = new_params
               best_loss = new_loss
+              best_params = deepcopy(params)
           end
 
           T *= alpha
 
           # Print iteration details
           if i % 100 == 0
-              println("Iteration: $i, Temperature: $(round(T, digits=4)), Loss: $(round(best_loss, digits=4))")
+              println("Iteration: $i, Temperature: $(round(T, digits=8)), Loss: $(round(best_loss, digits=8))")
           end
       end
 
       Flux.loadparams!(model, best_params)
   end
+
+
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -474,51 +492,52 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
     # first some simulated annealing
     T0 = 10.0
-    alpha = 0.99
-    iter = 1000
-    simulated_annealing(model, loss, X_train', y_train, T0, alpha, iter)
+    alpha = 0.998
+    iter = 10000
+    simulated_annealing!(model, loss, X_train', y_train, T0, alpha, iter)
+    println("Loss after simulated annealing: $(loss(X_train', y_train, model))")
     
 
-    # while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
-    #     l = 0.0
-    #     if device == cpu
-    #       for (X_batch, y_batch) in train_data_loader
-    #         gs = Flux.gradient(params(model)) do 
-    #           l = loss(X_batch, y_batch)
-    #         end
-    #         Flux.Optimise.update!(opt, params(model), gs)
-    #       end
-    #     else
-    #       gs = Flux.gradient(params(model)) do 
-    #         l = loss(X_train', y_train)
-    #       end
-    #       Flux.Optimise.update!(opt, params(model), gs)
-    #     end
+    while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
+        l = 0.0
+        if device == cpu
+          for (X_batch, y_batch) in train_data_loader
+            gs = Flux.gradient(params(model)) do 
+              l = loss(X_batch, y_batch, model)
+            end
+            Flux.Optimise.update!(opt, params(model), gs)
+          end
+        else
+          gs = Flux.gradient(params(model)) do 
+            l = loss(X_train', y_train, model)
+          end
+          Flux.Optimise.update!(opt, params(model), gs)
+        end
         
-    #     if (epoch % logstep == 0 || epoch == 1)
-    #         loss_cur = l
-    #         Δloss = loss_cur - loss_last
-    #         if Δloss > 0.0
-    #             stall_count += 1
-    #         end
-    #         if stall_count ≥ stall_check_count && Δloss < 0.0
-    #             println("Stalled at epoch $epoch, loss $loss_cur")
-    #             break
-    #         end
-    #         ΔΔloss = Δloss - Δloss_last
-    #         loss_last = loss_cur
-    #         Δloss_last = Δloss
-    #         if abs(Δloss) > tol || abs(Δloss_last) > Δtol
-    #             c1 = abs(Δloss) > tol ? ">" : "≤"
-    #             c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
-    #             cur_time = Dates.format(now(), "HH:MM:SS")
-    #             println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
-    #         end
-    #         logstepfloat *= logstepgrowth
-    #         logstep = round(Int, logstepfloat)
-    #     end
-    #     epoch += 1
-    # end
+        if (epoch % logstep == 0 || epoch == 1)
+            loss_cur = l
+            Δloss = loss_cur - loss_last
+            if Δloss > 0.0
+                stall_count += 1
+            end
+            if stall_count ≥ stall_check_count && Δloss < 0.0
+                println("Stalled at epoch $epoch, loss $loss_cur")
+                break
+            end
+            ΔΔloss = Δloss - Δloss_last
+            loss_last = loss_cur
+            Δloss_last = Δloss
+            if abs(Δloss) > tol || abs(Δloss_last) > Δtol
+                c1 = abs(Δloss) > tol ? ">" : "≤"
+                c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
+                cur_time = Dates.format(now(), "HH:MM:SS")
+                println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
+            end
+            logstepfloat *= logstepgrowth
+            logstep = round(Int, logstepfloat)
+        end
+        epoch += 1
+    end
 
     Δloss = Inf
     ΔΔloss = Inf
@@ -539,13 +558,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     #     if device == cpu
     #       for (X_batch, y_batch) in train_data_loader
     #         gs = Flux.gradient(params(model)) do
-    #           l = loss1(X_batch, y_batch, λ1, λ2)
+    #           l = loss1(X_batch, y_batch, model, λ1, λ2)
     #         end
     #         Flux.Optimise.update!(opt, params(model), gs)
     #       end
     #     else
     #       gs = Flux.gradient(params(model)) do 
-    #         l = loss1(X_train', y_train, λ1, λ2)
+    #         l = loss1(X_train', y_train, model, λ1, λ2)
     #       end
     #       Flux.Optimise.update!(opt, params(model), gs)
     #     end
@@ -594,7 +613,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     end
 
     @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
-    println("Finished after $epoch epochs, Loss: $loss_cur, ΔLoss: $Δloss, Test loss: $(loss(X_test', y_test))")
+    println("Finished after $epoch epochs, Loss: $loss_cur, ΔLoss: $Δloss, Test loss: $(loss(X_test', y_test, model))")
 
   end
 
@@ -695,7 +714,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   current_date_and_time = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
 
-  model_test_loss = loss(X_test', y_test)
+  model_test_loss = loss(X_test', y_test, model)
 
   # save model to json for Python import
   function export_model_params_to_json(model::Chain, input_mean::Matrix{Float32}, input_std::Matrix{Float32}, filename::String, test_dict, test_dict_zero_bias, current_date_and_time, model_test_loss)
@@ -724,7 +743,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
 
   # Evaluate the model on the test set 
-  test_loss = loss(X_test', y_test)
+  test_loss = loss(X_test', y_test, model)
   println("Test loss (MSE): ", test_loss)
 
   return (model=model, input_mean=input_mean, input_std=input_std, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
