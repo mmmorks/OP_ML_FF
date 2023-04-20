@@ -400,7 +400,35 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   loss(x, y, λ=0.0, λ1=0.0, λ2=0.00002) = combined_loss(x, y', model(x), model, λ, λ1, λ2)
 
+  loss_ps = 
+
   # loss(x, y) = Flux.mse(model(x), y')
+
+  function simulated_annealing(model, loss, x, y, T0, alpha, iter)
+      params = Flux.params(model)
+      best_params = deepcopy(params)
+      best_loss = loss(x, y, params)
+
+      T = T0
+      for i in 1:iter
+          new_params = map(p -> p + 0.1 * randn(size(p)), params)
+          new_loss = loss(x, y, new_params)
+
+          if new_loss < best_loss || exp((best_loss - new_loss) / T) > rand()
+              params .= new_params
+              best_loss = new_loss
+          end
+
+          T *= alpha
+
+          # Print iteration details
+          if i % 100 == 0
+              println("Iteration: $i, Temperature: $(round(T, digits=4)), Loss: $(round(best_loss, digits=4))")
+          end
+      end
+
+      Flux.loadparams!(model, best_params)
+  end
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -442,46 +470,55 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       println("Loading old model, $old_model")
       @load old_model model
   else
-    while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
-        l = 0.0
-        if device == cpu
-          for (X_batch, y_batch) in train_data_loader
-            gs = Flux.gradient(params(model)) do 
-              l = loss(X_batch, y_batch)
-            end
-            Flux.Optimise.update!(opt, params(model), gs)
-          end
-        else
-          gs = Flux.gradient(params(model)) do 
-            l = loss(X_train', y_train)
-          end
-          Flux.Optimise.update!(opt, params(model), gs)
-        end
+
+
+    # first some simulated annealing
+    T0 = 10.0
+    alpha = 0.99
+    iter = 1000
+    simulated_annealing(model, loss, X_train', y_train, T0, alpha, iter)
+    
+
+    # while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
+    #     l = 0.0
+    #     if device == cpu
+    #       for (X_batch, y_batch) in train_data_loader
+    #         gs = Flux.gradient(params(model)) do 
+    #           l = loss(X_batch, y_batch)
+    #         end
+    #         Flux.Optimise.update!(opt, params(model), gs)
+    #       end
+    #     else
+    #       gs = Flux.gradient(params(model)) do 
+    #         l = loss(X_train', y_train)
+    #       end
+    #       Flux.Optimise.update!(opt, params(model), gs)
+    #     end
         
-        if (epoch % logstep == 0 || epoch == 1)
-            loss_cur = l
-            Δloss = loss_cur - loss_last
-            if Δloss > 0.0
-                stall_count += 1
-            end
-            if stall_count ≥ stall_check_count && Δloss < 0.0
-                println("Stalled at epoch $epoch, loss $loss_cur")
-                break
-            end
-            ΔΔloss = Δloss - Δloss_last
-            loss_last = loss_cur
-            Δloss_last = Δloss
-            if abs(Δloss) > tol || abs(Δloss_last) > Δtol
-                c1 = abs(Δloss) > tol ? ">" : "≤"
-                c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
-                cur_time = Dates.format(now(), "HH:MM:SS")
-                println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
-            end
-            logstepfloat *= logstepgrowth
-            logstep = round(Int, logstepfloat)
-        end
-        epoch += 1
-    end
+    #     if (epoch % logstep == 0 || epoch == 1)
+    #         loss_cur = l
+    #         Δloss = loss_cur - loss_last
+    #         if Δloss > 0.0
+    #             stall_count += 1
+    #         end
+    #         if stall_count ≥ stall_check_count && Δloss < 0.0
+    #             println("Stalled at epoch $epoch, loss $loss_cur")
+    #             break
+    #         end
+    #         ΔΔloss = Δloss - Δloss_last
+    #         loss_last = loss_cur
+    #         Δloss_last = Δloss
+    #         if abs(Δloss) > tol || abs(Δloss_last) > Δtol
+    #             c1 = abs(Δloss) > tol ? ">" : "≤"
+    #             c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
+    #             cur_time = Dates.format(now(), "HH:MM:SS")
+    #             println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
+    #         end
+    #         logstepfloat *= logstepgrowth
+    #         logstep = round(Int, logstepfloat)
+    #     end
+    #     epoch += 1
+    # end
 
     Δloss = Inf
     ΔΔloss = Inf
@@ -735,7 +772,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   lateral_acceleration_range = range(-4.0, 4.0, length=100)
 
   plot_col_num = 1
-  p = plot(layout = (size(collect(speed_range), 1), 2), legend=:bottomright, size=(1300, 2300), margin=10mm)
+  p = plot(layout = (size(collect(speed_range), 1), 2), legend=:bottomright, size=(1500, 2300), margin=10mm)
 
   for (si, speed) in enumerate(speed_range)
     # Plot the training data
