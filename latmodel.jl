@@ -64,7 +64,8 @@ function describe(arr)
   maximum_value = maximum(arr)
   quartiles = quantile(arr, [0.25, 0.5, 0.75])
   
-  return "n: $n, mean: $μ, std: $σ, min: $minimum_value, max: $maximum_value, 25%: $(quartiles[1]), 50%: $(quartiles[2]), 75%: $(quartiles[3])"
+  return f"n: {n}, mean: {μ:0.3f}, std: {σ:0.3f}, min: {minimum_value:0.3f}, max: {maximum_value:0.3f}, 25%: {quartiles[1]:0.3f}, 50%: {quartiles[2]:0.3f}, 75%: {quartiles[3]:0.3f}"
+
 end
 
 function load_data(infile::String, use_existing_data::Bool, outdir::String)::DataFrame
@@ -224,6 +225,9 @@ end
 function train_model(working_dir::String, use_existing_model::Bool, data::DataFrame)::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test), Tuple{Flux.Chain, Matrix{Float32}, Matrix{Float32}, Matrix{Float32}, Vector{Float32}, Matrix{Float32}, Vector{Float32}}}
   model_path = joinpath(working_dir, Base.basename(working_dir))
 
+  # temp flip sign of roll
+  data[!, :roll] = -data[!, :roll]
+
   # split into train and test sets
   train, test = stratifiedobs(row->row[:combined_column], data, p = 0.8)
 
@@ -264,19 +268,20 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   println("Test data after copying symmmetric data: $(size(test,1))")
 
   device = CUDA.functional() ? gpu : cpu
+  CUDA.allowscalar(false)
   println("Using device: $(device)")
   # device = cpu
 
   # normalize the data
   X_train = Matrix(select(train, Not([:steer_cmd])))
-  println("$(train[1, :])")
-  println("as matrix: $(X_train[1, :])")
+  # println("$(train[1, :])")
+  # println("as matrix: $(X_train[1, :])")
   X_train = (X_train .- input_mean) ./ input_std
   X_train = Array{Float32}(X_train) |> device
-  println("normalized $(X_train[1, :])")
+  # println("normalized $(X_train[1, :])")
   y_train = train[:, "steer_cmd"]
   y_train = Array{Float32}(y_train) |> device
-  println("steer cmd: $(y_train[1])")
+  # println("steer cmd: $(y_train[1])")
   X_test = Matrix(select(test, Not([:steer_cmd])))
   X_test = (X_test .- input_mean) ./ input_std
   X_test = Array{Float32}(X_test) #|> device
@@ -296,30 +301,30 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   # Define the loss function, which includes penalties to enforce physically correct behavior
 
   # Define the range of values for each independent variable
-  # v_ego_range = range(0, stop=40, length=14)
-  # lateral_acceleration_range = range(-4, stop=4, length=11)
-  # lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
-  # lateral_jerk_range = range(-3, stop=3, length=15)
-  # lateral_jerk_range_hi = range(-2.99, stop=3.01, length=15)
-  # roll_range = range(-0.2, stop=0.2, length=21)
-  # roll_range_hi = range(-0.195, stop=0.205, length=21)
+  v_ego_range = range(1, stop=40, length=14)
+  lateral_acceleration_range = range(-4, stop=4, length=11)
+  lateral_acceleration_range_hi = range(-3.99, stop=4.01, length=11)
+  lateral_jerk_range = range(-3, stop=3, length=15)
+  lateral_jerk_range_hi = range(-2.99, stop=3.01, length=15)
+  roll_range = range(-0.2, stop=0.2, length=21)
+  roll_range_hi = range(-0.195, stop=0.205, length=21)
 
   # # Create a regular grid of points using Iterators.product
-  # grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)]...) |> device
-  # grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)]...) |> device
-  # grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)]...) |> device
-  # grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)]...) |> device
-  # grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)]...) |> device
+  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)]...) |> device
+  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)]...) |> device
+  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)]...) |> device
+  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)]...) |> device
+  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)]...) |> device
 
   # println(typeof(grid))
   # println(typeof(X_test))
 
-  # d_odd_eye_cpu = Matrix{Float32}(I, 4, 4)
-  # for i in 2:4
-  #   d_odd_eye_cpu[i,i] = -1.0
-  # end
+  d_odd_eye_cpu = Matrix{Float32}(I, 4, 4)
+  for i in 2:4
+    d_odd_eye_cpu[i,i] = -1.0
+  end
 
-  # d_odd_eye = device(d_odd_eye_cpu)
+  d_odd_eye = device(d_odd_eye_cpu)
 
   # function shift_column(matrix::Matrix, column_index::Int, shift::Float32)
   #     rows, cols = size(matrix)
@@ -339,45 +344,45 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   #     return matrix + shift_matrix
   # end
 
-  # function physical_constraint_losses(x, y_pred)
-  #     model_grid = model(grid)
-  #     model_da = model(grid_da)
-  #     model_dj = model(grid_dj)
-  #     model_dg = model(grid_dg)
-  #     model_odd_neg = model(grid_odd_neg)
+  function physical_constraint_losses(x, y_pred, λ1, λ2)
+      model_grid = model(grid)
+      model_da = model(grid_da)
+      model_dj = model(grid_dj)
+      model_dg = model(grid_dg)
+      model_odd_neg = model(grid_odd_neg)
 
-  #     monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
-  #                         sum(max.(0, (model_dj .- model_grid) .* -1)) +
-  #                         sum(max.(0, (model_dg .- model_grid) .* -1))
+      monotonicity_loss = sum(max.(0, (model_da .- model_grid) .* -1)) +
+                          sum(max.(0, (model_dj .- model_grid) .* -1)) +
+                          sum(max.(0, (model_dg .- model_grid) .* -1))
 
-  #     odd_loss = sum(abs.(model_grid .+ model_odd_neg))
+      odd_loss = sum(abs.(model_grid .+ model_odd_neg))
 
-  #     # Apply the d_odd_eye transformation to x
-  #     # transformed_x = (x' * d_odd_eye)'
+      # Apply the d_odd_eye transformation to x
+      # transformed_x = (x' * d_odd_eye)'
 
-  #     # # Compute the model output for transformed_x
-  #     # transformed_y_pred = model(transformed_x)
+      # # Compute the model output for transformed_x
+      # transformed_y_pred = model(transformed_x)
 
-  #     # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
+      # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
 
-  #     # Total loss with penalty weights λ1 and λ2
-  #     λ1 = 0.0002
-  #     λ2 = 0.00002
+      # Total loss with penalty weights λ1 and λ2
+      # λ1 = 0.0002
+      # λ2 = 0.00002
 
-  #     # return λ2 * odd_loss
-  #     return λ1 * monotonicity_loss + λ2 * odd_loss
-  # end
+      # return λ2 * odd_loss
+      return λ1 * monotonicity_loss + λ2 * odd_loss
+  end
 
-  # function loss1(x, y)
-  #     y_pred = model(x)
-  #     standard_loss = Flux.mse(y_pred, y')
+  function loss1(x, y, λ1, λ2) 
+      y_pred = model(x)
+      standard_loss = Flux.mse(y_pred, y')
 
-  #     # return standard_loss
+      # return standard_loss
 
-  #     total_loss = standard_loss + physical_constraint_losses(x, y_pred)
+      total_loss = standard_loss + physical_constraint_losses(x, y_pred, λ1, λ2)
 
-  #     return total_loss
-  # end
+      return total_loss
+  end
 
   # function loss(x, y)
   #     y_pred = model(x)
@@ -386,7 +391,16 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   #     return standard_loss
   # end
 
-  loss(x, y) = Flux.mse(model(x), y')
+  function combined_loss(x, y_true, y_pred, model, λ, λ1, λ2)
+      mse = Flux.Losses.mse(y_true, y_pred)
+      l2 = sum(p -> sum(abs2, p), params(model)) * λ
+      physical_constraints = physical_constraint_losses(x, y_pred, λ1, λ2)
+      return mse + l2 + physical_constraints
+  end
+
+  loss(x, y, λ=0.0, λ1=0.0, λ2=0.00002) = combined_loss(x, y', model(x), model, λ, λ1, λ2)
+
+  # loss(x, y) = Flux.mse(model(x), y')
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -408,7 +422,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_check_count = device == gpu ? 50 : 15
   stall_count = 0
   epoch = 1
-  epoch_max = device == gpu ? 10000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 30000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 1000
   train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)
@@ -478,21 +492,29 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     epoch = 1
     epoch_max = device == gpu ? 5000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
 
+    λ1max = 0.0002
+    λ2max = 0.00002
+
     # while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
     #     l = 0.0
+    #     λ1 = λ1max * (epoch / (epoch_max * 0.5)) |> device
+    #     λ2 = λ2max * (epoch / (epoch_max * 0.5)) |> device
     #     if device == cpu
     #       for (X_batch, y_batch) in train_data_loader
-    #         gs = Flux.gradient(params(model)) do 
-    #           l = loss1(X_batch, y_batch)
+    #         gs = Flux.gradient(params(model)) do
+    #           l = loss1(X_batch, y_batch, λ1, λ2)
     #         end
     #         Flux.Optimise.update!(opt, params(model), gs)
     #       end
     #     else
     #       gs = Flux.gradient(params(model)) do 
-    #         l = loss1(X_train', y_train)
+    #         l = loss1(X_train', y_train, λ1, λ2)
     #       end
     #       Flux.Optimise.update!(opt, params(model), gs)
     #     end
+
+    #     λ1 = λ1 |> cpu
+    #     λ2 = λ2 |> cpu
         
     #     if (epoch % logstep == 0 || epoch == 1)
     #         loss_cur = l
@@ -511,7 +533,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     #             c1 = abs(Δloss) > tol ? ">" : "≤"
     #             c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
     #             cur_time = Dates.format(now(), "HH:MM:SS")
-    #             println(f"round 2 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G}")
+    #             println(f"round 2 {cur_time} Epoch: {epoch:3d} (of {epoch_max} with loss coeffs {λ1:e}, {λ2:e}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G}")
     #         end
     #         logstepfloat *= logstepgrowth
     #         logstep = round(Int, logstepfloat)
@@ -526,12 +548,12 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       X_test = cpu(X_test)
       y_test = cpu(y_test)
       model = cpu(model)
-      # grid = cpu(grid)
-      # grid_da = cpu(grid_da)
-      # grid_dj = cpu(grid_dj)
-      # grid_dg = cpu(grid_dg)
-      # grid_odd_neg = cpu(grid_odd_neg)
-      # d_odd_eye = cpu(d_odd_eye)
+      grid = cpu(grid)
+      grid_da = cpu(grid_da)
+      grid_dj = cpu(grid_dj)
+      grid_dg = cpu(grid_dg)
+      grid_odd_neg = cpu(grid_odd_neg)
+      d_odd_eye = cpu(d_odd_eye)
     end
 
     @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
@@ -800,7 +822,7 @@ function create_model(in_file, out_dir_base)
   use_existing_input = false
   if isfile(preprocess_infile) && stat(in_file).mtime < stat(preprocess_infile).mtime
       use_existing_input = true
-      return
+      # return
   end
   
   data = load_data(in_file, use_existing_input, outdir)
@@ -815,6 +837,7 @@ function main(in_dir)
     if occursin(".feather", in_file) && !occursin("_balanced.feather", in_file)
       println("Processing $in_file")
       create_model(joinpath(in_dir, in_file), in_dir)
+      return
     end
   end
 end
