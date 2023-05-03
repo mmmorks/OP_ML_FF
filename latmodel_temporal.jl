@@ -113,7 +113,6 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String)::Dat
     mm_lateral_accel = [-4.1, 4.1]
     mm_lateral_jerk = [-5.0, 5.0]
     mm_roll = [-0.20, 0.20]
-    mm_a_ego = [-4.0, 4.0]
 
     # setup bins
     nbins = 41
@@ -318,15 +317,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   lateral_jerk_range_hi = range(-1.94, stop=2.06, length=7)
   roll_range = range(-0.2, stop=0.2, length=5)
   roll_range_hi = range(-0.17, stop=0.23, length=5)
-  a_ego_range = range(-5, stop=5, length=7)
 
   # # Create a regular grid of points using Iterators.product
-  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, 0,0,0,0,0,0)]...) #|> device
-  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, 0.0, 0.0, 0.0, 0,0,0,0,0,0)]...) #|> device
+  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, 0,0,0,0,0,0)]...) #|> device
+  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, 0.0, 0.0, 0.0, 0,0,0,0,0,0)]...) #|> device
 
 
   function physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
@@ -668,7 +666,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   function test_evaluate_manually(model; zero_bias=false)
     vego_range = 0:20:40
-    aego_range = -4:4:4
     lataccel_range = -4:4:4
     latjerk_range = -3:3:3
     roll_range = -0.2:0.2:0.2
@@ -676,23 +673,21 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     println("Testing with zero bias: $zero_bias")
     test_dict = Dict()
     for vego in vego_range
-      for aego in aego_range
-        for lataccel in lataccel_range
-          for latjerk in latjerk_range
-            for roll in roll_range
-              x = Float32[vego aego lataccel latjerk roll 0 0 0 0 0 0]
-              xstr = "[" * join(x, ",") * "]"
-              result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
-              result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
-              test_dict[xstr] = result_model
-              if !isapprox(result_model, result_manual, atol=5e-5)
-                println("Mismatch at input: $x")
-                println("Model: $result_model, Manual: $result_manual")
-                return false
-              end
+      for lataccel in lataccel_range
+        for latjerk in latjerk_range
+          for roll in roll_range
+            x = Float32[vego lataccel latjerk roll 0 0 0 0 0 0]
+            xstr = "[" * join(x, ",") * "]"
+            result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
+            result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
+            test_dict[xstr] = result_model
+            if !isapprox(result_model, result_manual, atol=5e-5)
+              println("Mismatch at input: $x")
+              println("Model: $result_model, Manual: $result_manual")
+              return false
             end
-          end 
-        end
+          end
+        end 
       end
     end
 
@@ -702,7 +697,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.4 0.5 0.1 0.05 0 0 0 0 0 0]
+  example_input = [25 0.5 0.1 0.05 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -765,19 +760,15 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   max_abs_long_accel = 0.2
 
   # Create a function to filter the dataset based on speed
-  function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false, no_accel=false)
+  function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false)
     indices = findall(abs.(Xi[:, 1] .- speed) .< tolerance)
     X, y = Xi[indices, :], yi[indices]
-    if no_accel
-      indices = findall(abs.(X[:, 2]) .< max_abs_long_accel)
-      X, y = X[indices, :], y[indices]
-    end
     if no_jerk
-      indices = findall(abs.(X[:, 4]) .< max_abs_lat_jerk)
+      indices = findall(abs.(X[:, 3]) .< max_abs_lat_jerk)
       X, y = X[indices, :], y[indices]
     end
     if no_roll
-      indices = findall(abs.(X[:, 5]) .< max_abs_roll)
+      indices = findall(abs.(X[:, 4]) .< max_abs_roll)
       X, y = X[indices, :], y[indices]
     end
     return X, y
@@ -795,7 +786,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   lateral_acceleration_range = range(-4.0, 4.0, length=100)
 
   plot_col_num = 1
-  p = plot(layout = (size(collect(speed_range), 1), 3), legend=:bottomright, size=(2200, 2300), margin=10mm)
+  p = plot(layout = (size(collect(speed_range), 1)), legend=:bottomright, size=(1500, 2300), margin=10mm)
 
   for (si, speed) in enumerate(speed_range)
     # Plot the training data
@@ -812,7 +803,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed 0.0 la lj 0.0 0 0 0 0 0 0]
+          input_data = [speed la lj 0.0 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -853,7 +844,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed 0.0 la 0.0 gla 0 0 0 0 0 0]
+          input_data = [speed la 0.0 gla 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -870,44 +861,6 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   end
   xlabel!(p[size(collect(speed_range),1),plot_col_num], "a_lat (m/s²)")
 
-  # now w.r.t. longitudinal acceleration
-
-  # Iterate over the speed range and create a plot for each speed
-
-  plot_col_num += 1
-
-  for (si, speed) in enumerate(speed_range)
-
-    # Plot the training data
-    X_train_filtered, y_train_filtered = filter_data_by_speed(X_train_rescaled, y_train, speed, speed_step/2, no_jerk=true)
-    scatter!(p[si,plot_col_num], X_train_filtered[1:plot_scatter_step:end, 3], y_train_filtered[1:plot_scatter_step:end], label="Training Data", markersize=2, markercolor=:grey, markeralpha=0.1, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
-
-    # Plot the test data
-    X_test_filtered, y_test_filtered = filter_data_by_speed(X_test_rescaled, y_test, speed, speed_step/2, no_jerk=true)
-    scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 3], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=:green, markeralpha=0.2, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
-
-    # Plot the model output
-    for gla in -3.0:1.5:3.0
-      x_model = []
-      y_model = []
-      for la in lateral_acceleration_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed gla la 0.0 0.0 0 0 0 0 0 0]
-          steer_command = feedforward_function(input_data)
-          push!(x_model, la)
-          push!(y_model, steer_command)
-      end
-      plot!(p[si,plot_col_num], x_model, y_model, label="accel = $gla", linewidth=4, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
-    end
-
-    # Configure the plot's appearance
-    if si == 1
-      title!(p[1,plot_col_num], f"Steer vs. a_lat at {(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph @ |lat jerk| < {max_abs_lat_jerk:.2G}, |roll| < {max_abs_roll:.2G}")
-    else
-      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
-    end
-  end
-  xlabel!(p[size(collect(speed_range),1),plot_col_num], "a_lat (m/s²)")
 
   # Display the plot
   savefig(p, "$plot_path/$car_name.png")
