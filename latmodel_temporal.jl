@@ -47,9 +47,12 @@ using Optim
 using ModelingToolkit
 
 
-function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString)
+function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
   full_path = joinpath(path, folder_name)
   i = 1
+  if isdir(full_path) && !make_new
+      return full_path
+  end
   while isdir(full_path)
       folder_name_with_iterator = string(folder_name, "_", i)
       full_path = joinpath(path, folder_name_with_iterator)
@@ -230,8 +233,9 @@ end
 function train_model(working_dir::String, use_existing_model::Bool, data::DataFrame)::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test), Tuple{Flux.Chain, Matrix{Float32}, Matrix{Float32}, Matrix{Float32}, Vector{Float32}, Matrix{Float32}, Vector{Float32}}}
   model_path = joinpath(working_dir, Base.basename(working_dir))
 
+
   # temp flip sign of roll
-  data[!, :roll] = -data[!, :roll]
+  # data[!, :roll] = -data[!, :roll]
   # old_nrows = nrow(data)
   # data = filter(row -> (sign(row.roll) != sign(row.lateral_accel) || sign(row.roll) != sign(row.lateral_jerk) || sign(row.lateral_accel) != sign(row.lateral_jerk)) || (sign(row.steer_cmd) == sign(row.lateral_accel)), data)
   # println(f"Filtered out {old_nrows - nrow(data)} points with disagreeing signs")
@@ -298,10 +302,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   # Define the model
   model = Chain(
-      Dense(input_dim, 10, sigmoid),
-      Dense(10, 20, sigmoid),
-      Dense(20, 20),
-      Dense(20, 1)
+      Dense(input_dim, 8, sigmoid),
+      Dense(8, 16, sigmoid),
+      Dense(16, 16),
+      Dense(16, 1)
   ) |> device
 
   # Define the loss function, which includes penalties to enforce physically correct behavior
@@ -317,40 +321,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   a_ego_range = range(-5, stop=5, length=7)
 
   # # Create a regular grid of points using Iterators.product
-  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
-  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
-  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
-  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
-  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
-  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, 0.0, 0.0, 0.0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)]...) #|> device
+  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, 0,0,0,0,0,0)]...) #|> device
+  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, 0,0,0,0,0,0)]...) #|> device
+  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, a_ego_range, 0.0, 0.0, 0.0, 0,0,0,0,0,0)]...) #|> device
 
-  # println(typeof(grid))
-  # println(typeof(X_test))
-
-  d_odd_eye_cpu = Matrix{Float32}(I, 20, 20)
-  for i in 3:20
-    d_odd_eye_cpu[i,i] = -1.0
-  end
-
-  d_odd_eye = device(d_odd_eye_cpu)
-
-  # function shift_column(matrix::Matrix, column_index::Int, shift::Float32)
-  #     rows, cols = size(matrix)
-  #     if cols != 4
-  #         error("The input matrix should have 4 columns.")
-  #     end
-
-  #     if column_index < 1 || column_index > 4
-  #         error("Invalid column index. It should be between 1 and 4.")
-  #     end
-
-  #     # Create a Nx4 matrix with the shift value at the desired position
-  #     shift_matrix = zeros(Float32, rows, cols)
-  #     shift_matrix[:, column_index] .= shift
-
-  #     # Perform matrix addition to shift the specified column
-  #     return matrix + shift_matrix
-  # end
 
   function physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
       if λ1 == 0 && λ2 == 0
@@ -395,24 +372,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       return λ1 * monotonicity_loss + λ2 * odd_loss + λ3 * origin_loss
   end
 
-  function loss1(x, y, λ1, λ2, λ3) 
-      y_pred = model(x)
-      standard_loss = Flux.mse(y_pred, y')
-
-      # return standard_loss
-
-      total_loss = standard_loss + physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
-
-      return total_loss
-  end
-
-  # function loss(x, y)
-  #     y_pred = model(x)
-  #     standard_loss = Flux.mse(y_pred, y')
-
-  #     return standard_loss
-  # end
-
   function model_with_params(model, params)
       temp_model = deepcopy(model)
       Flux.loadparams!(temp_model, params)
@@ -427,7 +386,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   loss(x, y, model, λ=0.0, λ1=0.0, λ2=0.0, λ3=0.0) = combined_loss(x, y', model(x), model, λ, λ1, λ2, λ3)
-  loss1(x, y, model, λ=0.00000, λ1=0.00002, λ2=0.000002, λ3=0.0000) = combined_loss(x, y', model(x), model, λ, λ1, λ2, λ3)
 
 
   # loss(x, y) = Flux.mse(model(x), y')
@@ -518,7 +476,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_count = 0
   epoch = 1
   ilog = logstep + 1
-  epoch_max = device == gpu ? 10000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 25000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 400000
 
@@ -560,8 +518,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     
     λmax = 0.000
     λ1max = 0.0008
-    λ2max = 0.00002
-    λ3max = 0.000001
+    λ2max = 0.000015
+    λ3max = 0.000007
 
     λ_start_epoch_fraction = 0.25
     λ1_start_epoch_fraction = 0.02
@@ -632,63 +590,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     cur_time = Dates.format(now(), "HH:MM:SS")
     println(f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
 
-    Δloss = Inf
-    ΔΔloss = Inf
-    Δloss_last = 0.0
-    loss_last = Inf
-    loss_cur = 0.0
-    stall_count = 0
-    epoch = 1
-    epoch_max = device == gpu ? 5000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
-
-    λ1max = 0.0002
-    λ2max = 0.00002
-
-    # while epoch < epoch_min || ((abs(Δloss) > tol || abs(ΔΔloss) > Δtol) && epoch < epoch_max)
-    #     l = 0.0
-    #     λ1 = λ1max * (epoch / (epoch_max * 0.5)) |> device
-    #     λ2 = λ2max * (epoch / (epoch_max * 0.5)) |> device
-    #     if device == cpu
-    #       for (X_batch, y_batch) in train_data_loader
-    #         gs = Flux.gradient(params(model)) do
-    #           l = loss1(X_batch, y_batch, model, λ1, λ2)
-    #         end
-    #         Flux.Optimise.update!(opt, params(model), gs)
-    #       end
-    #     else
-    #       gs = Flux.gradient(params(model)) do 
-    #         l = loss1(X_train', y_train, model, λ1, λ2)
-    #       end
-    #       Flux.Optimise.update!(opt, params(model), gs)
-    #     end
-
-    #     λ1 = λ1 |> cpu
-    #     λ2 = λ2 |> cpu
-        
-    #     if (epoch % logstep == 0 || epoch == 1)
-    #         loss_cur = l
-    #         Δloss = loss_cur - loss_last
-    #         if Δloss > 0.0
-    #             stall_count += 1
-    #         end
-    #         if stall_count ≥ stall_check_count && Δloss < 0.0
-    #             println("Stalled at epoch $epoch, loss $loss_cur")
-    #             break
-    #         end
-    #         ΔΔloss = Δloss - Δloss_last
-    #         loss_last = loss_cur
-    #         Δloss_last = Δloss
-    #         if abs(Δloss) > tol || abs(Δloss_last) > Δtol
-    #             c1 = abs(Δloss) > tol ? ">" : "≤"
-    #             c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
-    #             cur_time = Dates.format(now(), "HH:MM:SS")
-    #             println(f"round 2 {cur_time} Epoch: {epoch:3d} (of {epoch_max} with loss coeffs {λ1:e}, {λ2:e}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.6f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.6f} {c2} {Δtol:.6G}")
-    #         end
-    #         logstepfloat *= logstepgrowth
-    #         logstep = round(Int, logstepfloat)
-    #     end
-    #     epoch += 1
-    # end
     # save the model for easy loading back into Flux.jl
       # bring data back to cpu
     if device == gpu
@@ -702,7 +603,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       grid_dj = cpu(grid_dj)
       grid_dg = cpu(grid_dg)
       grid_odd_neg = cpu(grid_odd_neg)
-      d_odd_eye = cpu(d_odd_eye)
       grid_origin = cpu(grid_origin)
     end
 
@@ -780,7 +680,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         for lataccel in lataccel_range
           for latjerk in latjerk_range
             for roll in roll_range
-              x = Float32[vego aego lataccel latjerk roll 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+              x = Float32[vego aego lataccel latjerk roll 0 0 0 0 0 0]
               xstr = "[" * join(x, ",") * "]"
               result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
               result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
@@ -791,7 +691,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                 return false
               end
             end
-          end
+          end 
         end
       end
     end
@@ -802,7 +702,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.4 0.5 0.1 0.05 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+  example_input = [25 0.4 0.5 0.1 0.05 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println("Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -891,7 +791,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   # Iterate over the speed range and create a plot for each speed
   # first w.r.t. lateral jerk
   speed_step = 6
-  speed_range = 3:speed_step:30
+  speed_range = 3:speed_step:35
   lateral_acceleration_range = range(-4.0, 4.0, length=100)
 
   plot_col_num = 1
@@ -912,7 +812,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed 0.0 la lj 0.0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+          input_data = [speed 0.0 la lj 0.0 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -931,12 +831,11 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     ylabel!(p[si,plot_col_num], "Steer Command")
   end
   xlabel!(p[size(collect(speed_range),1),plot_col_num], "a_lat (m/s²)")
-
-  # now w.r.t. lateral gravitational acceleration
-
   # Iterate over the speed range and create a plot for each speed
 
   plot_col_num += 1
+
+  # now w.r.t. lateral gravitational acceleration
 
   for (si, speed) in enumerate(speed_range)
 
@@ -954,7 +853,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed 0.0 la 0.0 gla 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+          input_data = [speed 0.0 la 0.0 gla 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -993,7 +892,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed gla la 0.0 0.0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+          input_data = [speed gla la 0.0 0.0 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -1017,7 +916,7 @@ end
 
 function create_model(in_file, out_dir_base)
   carname = replace(Base.basename(in_file), ".feather" => "")
-  outdir = create_folder_with_iterator(out_dir_base, carname)
+  outdir = create_folder_with_iterator(out_dir_base, carname, make_new=true)
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
   use_existing_input = false
   if isfile(preprocess_infile) && stat(in_file).mtime < stat(preprocess_infile).mtime
@@ -1027,7 +926,16 @@ function create_model(in_file, out_dir_base)
   
   data = load_data(in_file, use_existing_input, outdir)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model(outdir, false, data)
+  model_file = "$outdir/$carname.bson"
+  use_existing_input = false
+  println("Model file: $model_file")
+  if isfile(model_file) && stat(in_file).mtime < stat(model_file).mtime
+      use_existing_input = true
+      println("Using existing model file: $model_file")
+      # return
+  end
+
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model(outdir, use_existing_input, data)
   
   test_plot_model(model, outdir, X_train, y_train, X_test, y_test, input_mean, input_std)
 end

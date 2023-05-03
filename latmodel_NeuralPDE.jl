@@ -48,9 +48,12 @@ using Lux
 using NeuralPDE
 
 
-function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString)
+function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
   full_path = joinpath(path, folder_name)
   i = 1
+  if isdir(full_path) && !make_new
+      return full_path
+  end
   while isdir(full_path)
       folder_name_with_iterator = string(folder_name, "_", i)
       full_path = joinpath(path, folder_name_with_iterator)
@@ -699,6 +702,7 @@ end
 function create_model(in_file, out_dir_base)
   carname = replace(Base.basename(in_file), ".feather" => "")
   outdir = create_folder_with_iterator(out_dir_base, carname)
+
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
   use_existing_input = false
   if isfile(preprocess_infile) && stat(in_file).mtime < stat(preprocess_infile).mtime
@@ -708,7 +712,14 @@ function create_model(in_file, out_dir_base)
   
   data = load_data(in_file, use_existing_input, outdir)
 
-  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model(outdir, false, data)
+  model_file = replace(in_file, ".feather" => ".bson")
+  use_existing_input = false
+  if isfile(model_file) && stat(in_file).mtime < stat(model_file).mtime
+      use_existing_input = true
+      # return
+  end
+
+  model, input_mean, input_std, X_train, y_train, X_test, y_test = train_model(outdir, use_existing_input, data)
   
   test_plot_model(model, outdir, X_train, y_train, X_test, y_test, input_mean, input_std)
 end
