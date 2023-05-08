@@ -48,7 +48,7 @@ using ModelingToolkit
 using TeeStreams
 
 
-
+t_list = [-0.5 -0.3 0.3 0.5 0.9 1.7]
 
 function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
   full_path = joinpath(path, folder_name)
@@ -79,8 +79,6 @@ end
 
 function load_data(infile::String, use_existing_data::Bool, outdir::String, out_streams)::DataFrame
   # Load the data into a DataFrame
-  logfile = open(outdir * "/log.txt", "w")  # Open log file in write mode, overwriting old versions
-  out_streams = TeeStream(stdout, logfile)  # Create a Tee output stream
   if use_existing_data
     # infile = replace(infile, ".csv" => "_balanced.csv")
     infile = replace(infile, ".feather" => "_balanced.feather")
@@ -236,10 +234,15 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
 
   # temp flip sign of roll
-  # data[!, :roll] = -data[!, :roll]
+  data[!, :roll] = -data[!, :roll]
   # old_nrows = nrow(data)
   # data = filter(row -> (sign(row.roll) != sign(row.lateral_accel) || sign(row.roll) != sign(row.lateral_jerk) || sign(row.lateral_accel) != sign(row.lateral_jerk)) || (sign(row.steer_cmd) == sign(row.lateral_accel)), data)
   # println(out_streams, f"Filtered out {old_nrows - nrow(data)} points with disagreeing signs")
+
+
+  # remove lateral jerk from data (temporary)
+  select!(data, Not([:lateral_jerk]))
+  
 
   # 10 random rows
   println(out_streams, data[sample(1:nrow(data), 10), :])
@@ -253,13 +256,15 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   # split into train and test sets
   train, test = stratifiedobs(row->row[:combined_column], data, p = 0.8)
 
+
   # remove columns used only for binning
   select!(data, Not([:combined_column]))
   select!(data, Not([:v_ego_bins]))
   select!(data, Not([:lateral_accel_bins]))
   select!(data, Not([:lateral_jerk_bins]))
   select!(data, Not([:roll_bins]))
-  
+
+
   # split into independent an dependent variables
   X = Matrix(select(data, Not([:steer_cmd])))  # Assuming the last column is the dependent_var
   y = data[:, :steer_cmd];
@@ -319,21 +324,72 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   # Define the range of values for each independent variable
   v_ego_range = range(1, stop=40, length=14)
-  lateral_acceleration_range = range(-4, stop=4, length=11)
-  lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=11)
-  lateral_jerk_range = range(-2, stop=2, length=11)
-  lateral_jerk_range_hi = range(-1.94, stop=2.06, length=11)
-  roll_range = range(-0.2, stop=0.2, length=11)
-  roll_range_hi = range(-0.17, stop=0.23, length=11)
+  lateral_acceleration_range = range(-4, stop=4, length=12)
+  lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=12)
+  lateral_jerk_range = range(-2, stop=2, length=12)
+  lateral_jerk_range_hi = range(-1.94, stop=2.06, length=12)
+  roll_range = range(-0.2, stop=0.2, length=12)
+  roll_range_hi = range(-0.17, stop=0.23, length=12)
 
-  # # Create a regular grid of points using Iterators.product
-  grid = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_da = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_dj = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_dg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, 0,0,0,0,0,0)]...) #|> device
-  grid_odd_neg = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, 0,0,0,0,0,0)]...) #|> device
-  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, 0.0, 0.0, 0.0, 0,0,0,0,0,0)]...) #|> device
+  num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1)
+  function prepare_test_grid(lat_jerk_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)
+    num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1)
+    out_grid = Matrix{Float32}(undef, 9, num_test_samples)
+    i = 1
+    for la in lateral_acceleration_range
+      for lj in lateral_jerk_range
+        for roll in roll_range
+          for v_ego in v_ego_range
+            lat_accels = [lat_jerk_func(lj, t) for t in t_list]
+            grid_tmp = vcat([v_ego; la; roll], lat_accels')
+            out_grid[:, i] = grid_tmp
+            i += 1
+          end
+        end
+      end
+    end
+    out_grid
+  end
 
+  lj_func =  (lj,t) -> lj * t
+  grid = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)
+  grid_da = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)
+  grid_dj = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)
+  grid_dg = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)
+  grid_odd_neg = prepare_test_grid(lj_func, v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)
+  grid_origin = hcat([(collect(x) .- input_mean) ./ input_std for x in Iterators.product(v_ego_range, 0.0, 0.0, 0,0,0,0,0,0)]...) #|> device
+
+  lj_func = (lj,t)-> sign(lj) * abs(lj * t)
+  grid_apex = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)
+  grid_apex_dj = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)
+
+  varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
+  # print sizes of origin and regular grid
+
+
+  # print the fist 5 rows of the grid, one row per line, with names of the columns as headers
+  gapstr = "       ⋮                         ⋱                         ⋮"
+  println(out_streams, "Grid: $(varnames)\n$(join([string(grid[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_da: $(varnames)\n$(join([string(grid_da[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_da[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_dj: $(varnames)\n$(join([string(grid_dj[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_dj[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_dg: $(varnames)\n$(join([string(grid_dg[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_dg[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_odd_neg: $(varnames)\n$(join([string(grid_odd_neg[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_odd_neg[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_apex: $(varnames)\n$(join([string(grid_apex[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_apex[:, end-i]) for i in 0:2], "\n"))\n")
+  println(out_streams, "Grid_apex_dj: $(varnames)\n$(join([string(grid_apex_dj[:, i]) for i in 1:3], "\n"))")
+  println(out_streams, gapstr)
+  println(out_streams, "$(join([string(grid_apex_dj[:, end-i]) for i in 0:2], "\n"))\n")
 
   function physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
       if λ1 == 0 && λ2 == 0
@@ -349,9 +405,15 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           model_dj = model(grid_dj)
           model_dg = model(grid_dg)
 
+          # model_grid_apex = model(grid_apex)
+          # model_grid_apex_dj = model(grid_apex_dj)
+
+          # output wrt lat accel and lat jerk should be positive,
+          # output wrt roll and apex lateral jerk should be negative
           monotonicity_loss = sum(abs2, max.(0, (model_da .- model_grid) .* -1)) +
                               sum(abs2, max.(0, (model_dj .- model_grid) .* -1)) +
-                              sum(abs2, max.(0, (model_dg .- model_grid) .* -1))
+                              sum(abs2, max.(0, model_dg .- model_grid)) 
+                              # sum(abs2, max.(0, model_grid_apex_dj .- model_grid_apex))
       end
       if λ2 != 0.0
           model_odd_neg = model(grid_odd_neg)
@@ -482,7 +544,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_count = 0
   epoch = 1
   ilog = logstep + 1
-  epoch_max = device == gpu ? 50000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 40000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 400000
 
@@ -521,11 +583,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     grid_dg = grid_dg |> device
     grid_odd_neg = grid_odd_neg |> device
     grid_origin = grid_origin |> device
+    # grid_apex = grid_apex |> device
+    # grid_apex_dj = grid_apex_dj |> device
     
     λmax = 0.000
-    λ1max = 0.0015
-    λ2max = 0.000025
-    λ3max = 0.000015
+    λ1max = 0.002
+    λ2max = 0.00002
+    λ3max = 0.001
 
     λ_start_epoch_fraction = 0.25
     λ1_start_epoch_fraction = 0.02
@@ -587,7 +651,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
                 cur_time = Dates.format(now(), "HH:MM:SS")
-                println(out_streams, f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}, λ: {λ:.6G}, λ1: {λ1:.6G}, λ2: {λ2:.6G}, λ3: {λ3:.6G}")
+                println(out_streams, f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f}, ΔΔLoss: {ΔΔloss:.9f}, λ: {λ:.6G}, λ1: {λ1:.6G}, λ2: {λ2:.6G}, λ3: {λ3:.6G}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
@@ -599,7 +663,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     c1 = abs(Δloss) > tol ? ">" : "≤"
     c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
     cur_time = Dates.format(now(), "HH:MM:SS")
-    println(out_streams, f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; {stall_count} stalls of {stall_check_count}), Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f} {c1} {tol:.6G}, ΔΔLoss: {ΔΔloss:.9f} {c2} {Δtol:.6G}")
+    println(out_streams, f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f}, ΔΔLoss: {ΔΔloss:.9f}")
 
     # save the model for easy loading back into Flux.jl
       # bring data back to cpu
@@ -615,6 +679,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       grid_dg = cpu(grid_dg)
       grid_odd_neg = cpu(grid_odd_neg)
       grid_origin = cpu(grid_origin)
+      grid_apex = cpu(grid_apex)
+      grid_apex_dj = cpu(grid_apex_dj)
     end
 
     @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
@@ -680,27 +746,24 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   function test_evaluate_manually(model; zero_bias=false)
     vego_range = 0:20:40
     lataccel_range = -4:4:4
-    latjerk_range = -3:3:3
     roll_range = -0.2:0.2:0.2
     println(out_streams, "Testing manual model evaluation (as performed in OpenPilot)...")
     println(out_streams, "Testing with zero bias: $zero_bias")
     test_dict = Dict()
     for vego in vego_range
       for lataccel in lataccel_range
-        for latjerk in latjerk_range
-          for roll in roll_range
-            x = Float32[vego lataccel latjerk roll 0 0 0 0 0 0]
-            xstr = "[" * join(x, ",") * "]"
-            result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
-            result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
-            test_dict[xstr] = result_model
-            if !isapprox(result_model, result_manual, atol=5e-5)
-              println(out_streams, "Mismatch at input: $x")
-              println(out_streams, "Model: $result_model, Manual: $result_manual")
-              return false
-            end
+        for roll in roll_range
+          x = Float32[vego lataccel roll 0 0 0 0 0 0]
+          xstr = "[" * join(x, ",") * "]"
+          result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
+          result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
+          test_dict[xstr] = result_model
+          if !isapprox(result_model, result_manual, atol=5e-5)
+            println(out_streams, "Mismatch at input: $x")
+            println(out_streams, "Model: $result_model, Manual: $result_manual")
+            return false
           end
-        end 
+        end
       end
     end
 
@@ -710,7 +773,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
 
   # Example input (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-  example_input = [25 0.5 0.1 0.05 0 0 0 0 0 0]
+  example_input = [25 0.5 0.05 0 0 0 0 0 0]
   steer_command = feedforward_function(example_input)
   println(out_streams, "Steer command @ $example_input: ", steer_command)
   steer_command = feedforward_function_manual(example_input)
@@ -768,7 +831,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     return steer_command[1]
   end
 
-  max_abs_lat_jerk = 0.2
+  max_abs_lat_jerk = 0.2 * 0.3
   max_abs_roll = 0.05
 
   # Create a function to filter the dataset based on speed
@@ -776,11 +839,11 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     indices = findall(abs.(Xi[:, 1] .- speed) .< tolerance)
     X, y = Xi[indices, :], yi[indices]
     if no_jerk
-      indices = findall(abs.(X[:, 3]) .< max_abs_lat_jerk)
+      indices = findall(abs.(X[:, 5] .- X[:,6]) .< max_abs_lat_jerk)
       X, y = X[indices, :], y[indices]
     end
     if no_roll
-      indices = findall(abs.(X[:, 4]) .< max_abs_roll)
+      indices = findall(abs.(X[:, 3]) .< max_abs_roll)
       X, y = X[indices, :], y[indices]
     end
     return X, y
@@ -802,7 +865,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # Now looking at how the model output changes when the temporal values indicate
   # increasing or decreasing lateral accel
-  t_list = [-0.5 -0.3 0.3 0.5 0.9 1.7]
+  
 
   # Iterate over the speed range and create a plot for each speed
 
@@ -827,7 +890,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
           lat_accels = [lj * t for t in t_list]
-          input_data = [speed la lj 0.0]
+          input_data = [speed la 0.0]
           input_data = hcat(input_data, lat_accels)
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
@@ -847,7 +910,6 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # Now looking at how the model output changes when the temporal values indicate
   # increasing or decreasing lateral accel
-  t_list = [-0.5 -0.3 0.3 0.5 0.9 1.7]
 
   # Iterate over the speed range and create a plot for each speed
 
@@ -872,7 +934,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
           lat_accels = [sign(lj) * abs(lj * t) for t in t_list]
-          input_data = [speed la 0.0 0.0]
+          input_data = [speed la 0.0]
           input_data = hcat(input_data, lat_accels)
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
@@ -913,7 +975,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = []
       for la in lateral_acceleration_range
           # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          input_data = [speed la 0.0 gla 0 0 0 0 0 0]
+          input_data = [speed la gla 0 0 0 0 0 0]
           steer_command = feedforward_function(input_data)
           push!(x_model, la)
           push!(y_model, steer_command)
@@ -971,7 +1033,7 @@ end
 function create_model(in_file, out_dir_base)
   carname = replace(Base.basename(in_file), ".feather" => "")
   outdir = create_folder_with_iterator(out_dir_base, carname, make_new=true)
-  logfile = open(outdir * "/log.txt", "a")  # Open log file in append mode
+  logfile = open(outdir * "/$(carname)_log.txt", "a")  # Open log file in append mode
   out_streams = TeeStream(stdout, logfile)  # Create a Tee output stream
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
   use_existing_input = false
