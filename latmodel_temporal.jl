@@ -915,9 +915,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     plot_scatter_step = round(Int, max(1, size(X_test_filtered, 1) / scatter_points_desired))
     scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 2], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=test_color, markeralpha=test_alpha, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), markerstrokewidths=0)
 
-    vline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [-1, 1], color=:red, linestyle=:dash, linewidth=1, label="")
+    vline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
     
 
 
@@ -944,9 +944,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"NN model for {car_name}\nSustained lateral jerk response\n(lat. jerk determines past/future Δlat. accel)\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph @ |roll| < {max_abs_roll:.2G}")
+      title!(p[1,plot_col_num], f"NN model for {car_name}\nSustained lateral jerk response\n(lat. jerk determines past/future Δlat. accel)\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     else
-      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
     ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
@@ -967,9 +967,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     plot_scatter_step = round(Int, max(1, size(X_test_filtered, 1) / scatter_points_desired))
     scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 2], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=test_color, markeralpha=test_alpha, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), markerstrokewidths=0)
 
-    vline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [-1, 1], color=:red, linestyle=:dash, linewidth=1, label="")
+    vline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
     
 
 
@@ -994,9 +994,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Sustained abs lateral jerk response\n(e.g. stop and turn back the other way)\n{x_var_names}\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph @ |roll| < {max_abs_roll:.2G}")
+      title!(p[1,plot_col_num], f"{x_var_names}\nSustained abs lateral jerk response\n(e.g. stop and turn back the other way)\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph @ |roll| < {max_abs_roll:.2G}")
     else
-      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
     ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
@@ -1020,9 +1020,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     plot_scatter_step = round(Int, max(1, size(X_test_filtered, 1) / scatter_points_desired))
     scatter!(p[si,plot_col_num], X_test_filtered[1:plot_scatter_step:end, 2], y_test_filtered[1:plot_scatter_step:end], label="Test Data", markersize=2, markercolor=test_color, markeralpha=test_alpha, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), markerstrokewidths=0)
 
-    vline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [0.0], color=:black, linestyle=:dash, linewidth=1, label="")
-    hline!(p[si,plot_col_num], [-1, 1], color=:red, linestyle=:dash, linewidth=1, label="")
+    vline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[si,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
 
     # Plot the model output
     ci = 1
@@ -1045,9 +1045,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"Roll compensation [+] = leaning to the right\nModel test loss: {test_loss:.2G}\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph @ |lat jerk| < {max_abs_lat_jerk:.2G}")
+      title!(p[1,plot_col_num], f"Model test loss: {test_loss:.2G}\nRoll compensation [+] = leaning to the right\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |lat jerk| < {max_abs_lat_jerk:.2G}")
     else
-      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+      title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |lat jerk| < {max_abs_lat_jerk:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
     ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
@@ -1056,6 +1056,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # Display the plot
   savefig(p, "$plot_path/$car_name.png")
+  savefig(p, "$plot_path/$car_name.pdf")
   display(p)
 end
 
