@@ -68,7 +68,7 @@ using ModelingToolkit
 using TeeStreams
 
 
-t_list = [-0.4 -0.2 0.3 0.6 0.9 1.2 1.5 1.8]
+t_list = [-0.3 0.3 0.8]
 
 function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
   full_path = joinpath(path, folder_name)
@@ -140,7 +140,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     # setup bins
     nbins = 41
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 5000
+    sample_size = 1000
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
@@ -560,7 +560,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_count = 0
   epoch = 1
   ilog = logstep + 1
-  epoch_max = device == gpu ? 80000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 50000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 200000
 
@@ -592,7 +592,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     # simulated_annealing!(model, loss, X_train', y_train, T0, alpha, iter)
     # println(out_streams, "Loss after simulated annealing: $(loss(X_train', y_train, model))")
 
-    if size(y_train, 1) > 1.5batch_size
+    if size(y_train, 1) > batch_size
       X_train = cpu(X_train)
       y_train = cpu(y_train)
     end
@@ -618,6 +618,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     start_time = now()
     last_log_time = start_time - Dates.Millisecond(30000)
     ptime(t) = Dates.format(t, "HH:MM:SS")
+    losses = []
+    lambdas = []
     while epoch < epoch_min || (epoch < epoch_max) # && (abs(Δloss) > tol || abs(ΔΔloss) > Δtol)
         # determine λ1 and λ2. They stay at 0 until 25% of the way through the training, then increase linearly to their max values by 75% of the way through the training
         λ = λmax * min(1.0, max(0.0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.2)) |> device
@@ -642,6 +644,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
               if ibatch % 2 == 0
                 epoch += 1
                 ilog += 1
+                push!(losses, l)
+                push!(lambdas, (λ, λ1, λ2, λ3))
                 if epoch > epoch_max
                   break
                 end
@@ -657,6 +661,9 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           end
           Flux.Optimise.update!(opt, params(model), gs)
         end
+
+        push!(losses, l)
+        push!(lambdas, (λ, λ1, λ2, λ3))
         
         t = now()
         if (t - last_log_time) > Dates.Millisecond(30000) || epoch >= epoch_max
@@ -708,6 +715,31 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     end
 
     @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
+
+    # Create and save plot of training
+
+    # x value is just the epoch number
+    x = 1:length(losses)
+
+    mean_loss = mean(losses)
+    std_loss = std(losses)
+
+    # Plot the loss values with a black line on the left axis
+    p = plot(x, losses, label="Loss", color=:black, ylabel="Loss", xlabel="Epoch", yscale=:log10, legend=:topleft)
+    # ylims!(p, (0.0, mean_loss + 4 * std_loss))
+
+    # Iterate through each lamda and plot it with different colors
+    colors = [:red, :blue, :green, :orange]
+    for i in 1:4
+        lambda = [l[i] for l in lambdas]
+        l_max = maximum(lambda)
+        if l_max == 0.0
+            continue
+        end
+        normalized_lambda = lambda ./ l_max
+        plot!(twinx(), normalized_lambda, label="", color=colors[i], ylabel="Normalized Lamda",xticks=:none)
+    end
+    savefig(p, "$model_path.training.png")
     
     println(out_streams, "Finished after $epoch epochs, Loss: $loss_cur, ΔLoss: $Δloss, Test loss: $(loss(X_test', y_test, model))")
 
@@ -1094,7 +1126,7 @@ end
 
 function create_model(in_file, out_dir_base)
   carname = replace(Base.basename(in_file), ".feather" => "")
-  outdir = create_folder_with_iterator(out_dir_base, carname, make_new=false)
+  outdir = create_folder_with_iterator(out_dir_base, carname, make_new=true)
   logfile = open(outdir * "/$(carname)_log.txt", "a")  # Open log file in append mode
   out_streams = TeeStream(stdout, logfile)  # Create a Tee output stream
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
@@ -1123,7 +1155,7 @@ end
 
 function main(in_dir)
   for in_file in readdir(in_dir)
-    if occursin("7_e2e.feather", in_file) && !occursin("_balanced.feather", in_file)
+    if occursin("e2e.feather", in_file) && !occursin("_balanced.feather", in_file)
       println("Processing $in_file")
       create_model(joinpath(in_dir, in_file), in_dir)
       # return
