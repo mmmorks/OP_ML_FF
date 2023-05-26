@@ -158,6 +158,12 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
         return df
     end
 
+    # if lateral_jerk is always zero, replace with approximation from lateral accel
+    if all(data[!, :lateral_jerk] .== 0.0)
+        println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
+        data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03
+    end
+
     # filter data
     old_nrows = nrow(data)
     println(out_streams, f"{old_nrows} rows before filtering")
@@ -560,7 +566,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_count = 0
   epoch = 1
   ilog = logstep + 1
-  epoch_max = device == gpu ? 50000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 20000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 200000
 
@@ -1155,7 +1161,7 @@ end
 
 function main(in_dir)
   for in_file in readdir(in_dir)
-    if occursin("e2e.feather", in_file) && !occursin("_balanced.feather", in_file)
+    if occursin(".feather", in_file) && !occursin("_balanced.feather", in_file)
       println("Processing $in_file")
       create_model(joinpath(in_dir, in_file), in_dir)
       # return
