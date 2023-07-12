@@ -993,7 +993,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # (i.e. you're entering/exiting a turn at a constant rate that the car isn't keeping up with).
     # Here, we set a lateral jerk value and use that to compute the lateral acceleration at each time step.
     ci = 1
-    for lj in [-5.0, -2.5, -1.0, -0.25, 0.0, 0.25, 1.0, 2.5, 5.0]
+    for lj in [-1.0, -0.25, 0.0, 0.25, 1.0]
       x_model = []
       y_model = []
       for la in lateral_acceleration_range
@@ -1006,13 +1006,13 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           push!(x_model, la)
           push!(y_model, steer_command)
       end
-      plot!(p[si,plot_col_num], x_model, y_model, label="err = $lj", linewidth=line_width, xlims=(-3.5, 3.5), ylims=(-1.4,1.4))
+      plot!(p[si,plot_col_num], x_model, y_model, label="err = $lj", linewidth=line_width, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), color=palette(cpalette,5)[ci])
       ci += 1
     end
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"NN model for {car_name}\nLateral acceleration error response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
+      title!(p[1,plot_col_num], f"NN model for {car_name}\nLateral acceleration/jerk error response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     else
       title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     end
