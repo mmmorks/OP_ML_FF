@@ -362,10 +362,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   v_ego_range = range(1, stop=40, length=speed_len)
   lateral_acceleration_range = range(-4, stop=4, length=other_len)
   lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=other_len)
-  lateral_jerk_range = range(-2, stop=2, length=other_len)
-  lateral_jerk_range_hi = range(-1.94, stop=2.06, length=other_len)
-  lateral_error_range = range(-4, stop=4, length=other_len)
-  lateral_error_range_hi = range(-3.9, stop=4.1, length=other_len)
+  lateral_jerk_range = range(-5, stop=5, length=other_len)
+  lateral_jerk_range_hi = range(-4.87, stop=5.13, length=other_len)
+  lateral_error_range = range(-5, stop=5, length=other_len)
+  lateral_error_range_hi = range(-4.87, stop=5.13, length=other_len)
   roll_range = range(-0.2, stop=0.2, length=other_len)
   roll_range_hi = range(-0.17, stop=0.23, length=other_len)
   roll_rate_range = range(-0.4, stop=0.4, length=other_len)
@@ -914,11 +914,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   model_test_loss = loss(X_test', y_test, model)
 
   # save model to json for Python import
-  function export_model_params_to_json(model::Chain, input_mean::Matrix{Float32}, input_std::Matrix{Float32}, filename::String, test_dict, test_dict_zero_bias, current_date_and_time, model_test_loss, input_vars)
+  function export_model_params_to_json(model::Chain, input_mean::Matrix{Float32}, input_std::Matrix{Float32}, filename::String, current_date_and_time, model_test_loss, input_vars)
       W, b = params(model.layers[1])
       input_size = size(W, 2)
       output_size = size(params(model.layers[end])[1], 1)
-      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "test_dict" => test_dict, "test_dict_zero_bias" => test_dict_zero_bias, "current_date_and_time" => current_date_and_time, "model_test_loss" => model_test_loss, "input_vars" => input_vars)
+      params_dict = Dict{String, Any}("input_size" => input_size, "output_size" => output_size, "layers" => [], "input_mean" => input_mean, "input_std" => input_std, "current_date_and_time" => current_date_and_time, "model_test_loss" => model_test_loss, "input_vars" => input_vars)
 
       for (idx, layer) in enumerate(model.layers)
           if isa(layer, Dense)
@@ -936,7 +936,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       end
   end
 
-  export_model_params_to_json(model, Matrix{Float32}(input_mean), Matrix{Float32}(input_std), "$model_path.json", test_dict, test_dict_zero_bias, current_date_and_time, model_test_loss, names(select(data, Not([:steer_cmd]))))
+  export_model_params_to_json(model, Matrix{Float32}(input_mean), Matrix{Float32}(input_std), "$model_path.json", current_date_and_time, model_test_loss, names(select(data, Not([:steer_cmd]))))
 
 
   # Evaluate the model on the test set 
