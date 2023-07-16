@@ -138,9 +138,9 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     mm_roll = [-0.20, 0.20]
 
     # setup bins
-    nbins = 41
+    nbins = 121
     # this is the max number of points that will go in each bin. it's low because lowspeed data is scarse.
-    sample_size = 1000
+    sample_size = 20
     step_v_ego = (mm_v_ego[2] - mm_v_ego[1]) / nbins
     step_steer_cmd = (mm_steer_cmd[2] - mm_steer_cmd[1]) / nbins
     step_lateral_accel = (mm_lateral_accel[2] - mm_lateral_accel[1]) / nbins
@@ -244,7 +244,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     println(out_streams, f"Bin sizes: min={bin_min_size}, max={bin_max_size}, mean={bin_mean_size}, std={bin_std_size}")
 
 
-    new_bin_size = Int(round(max((bin_min_size + bin_mean_size)/2, mean(bin_sizes) - bin_std_size/4), digits=0))
+    new_bin_size = Int(round(max((bin_min_size + bin_mean_size)/2, mean(bin_sizes) - bin_std_size/2), digits=0))
     println(out_streams, f"Shrinking bins to {new_bin_size} points")
     flattened_sampled_bin_data = [i[sample(1:size(i,1), new_bin_size), :] for i in flattened_sampled_bin_data]
     data = vcat(flattened_sampled_bin_data...)
@@ -348,37 +348,47 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   # Define the model
   model = Chain(
-      Dense(input_dim, 12, sigmoid),
-      Dense(12, 16, sigmoid),
-      Dense(16, 16),
-      Dense(16, 1)
+      Dense(input_dim, 7, sigmoid),
+      Dense(7, 13, sigmoid),
+      Dense(13, 3),
+      Dense(3, 1)
   ) |> device
 
   # Define the loss function, which includes penalties to enforce physically correct behavior
 
   # Define the range of values for each independent variable
-  v_ego_range = range(1, stop=40, length=18)
-  lateral_acceleration_range = range(-4, stop=4, length=18)
-  lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=18)
-  lateral_jerk_range = range(-2, stop=2, length=18)
-  lateral_jerk_range_hi = range(-1.94, stop=2.06, length=18)
-  roll_range = range(-0.2, stop=0.2, length=18)
-  roll_range_hi = range(-0.17, stop=0.23, length=18)
+  speed_len = 8
+  other_len = 9
+  v_ego_range = range(1, stop=40, length=speed_len)
+  lateral_acceleration_range = range(-4, stop=4, length=other_len)
+  lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=other_len)
+  lateral_jerk_range = range(-2, stop=2, length=other_len)
+  lateral_jerk_range_hi = range(-1.94, stop=2.06, length=other_len)
+  lateral_error_range = range(-4, stop=4, length=other_len)
+  lateral_error_range_hi = range(-3.9, stop=4.1, length=other_len)
+  roll_range = range(-0.2, stop=0.2, length=other_len)
+  roll_range_hi = range(-0.17, stop=0.23, length=other_len)
+  roll_rate_range = range(-0.4, stop=0.4, length=other_len)
+  roll_rate_range_hi = range(-0.35, stop=0.45, length=other_len)
 
   num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1)
-  function prepare_test_grid(lat_jerk_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)
-    num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1)
+  function prepare_test_grid(lat_jerk_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
+    num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1) * size(lateral_error_range, 1) * size(roll_rate_range, 1)
     out_grid = Matrix{Float32}(undef, 4 + 2 * size(t_list,2), num_test_samples)
     i = 1
     for la in lateral_acceleration_range
       for lj in lateral_jerk_range
-        for roll in roll_range
-          for v_ego in v_ego_range
-            lat_accels = [lat_jerk_func(la, lj, t) for t in t_list]
-            rolls = [roll for t in t_list]
-            grid_tmp = vcat([v_ego; la; lj; roll], lat_accels', rolls')
-            out_grid[:, i] = ((grid_tmp' .- input_mean) ./ input_std)'
-            i += 1
+        for le in lateral_error_range
+          for roll in roll_range
+            for roll_rate in roll_rate_range
+              for v_ego in v_ego_range
+                lat_accels = [lat_jerk_func(la, lj, t) for t in t_list]
+                rolls = [roll + roll_rate * t for t in t_list]
+                grid_tmp = vcat([v_ego; la; le + lj; roll], lat_accels', rolls')
+                out_grid[:, i] = ((grid_tmp' .- input_mean) ./ input_std)'
+                i += 1
+              end
+            end
           end
         end
       end
@@ -387,12 +397,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   lj_func =  (la,lj,t) -> la + lj * t
-  grid = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range)
-  grid_da = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range)
-  grid_dj = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range)
-  grid_dg = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi)
-  grid_odd_neg = prepare_test_grid(lj_func, v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range)
-  grid_origin = prepare_test_grid(lj_func, v_ego_range, 0, 0, 0)
+  grid = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
+  grid_da = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
+  grid_dj = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, lateral_error_range, roll_rate_range)
+  grid_de = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, lateral_error_range_hi, roll_rate_range)
+  grid_dg = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, lateral_error_range, roll_rate_range)
+  grid_dg_rate = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range_hi, lateral_error_range, roll_rate_range_hi)
+  grid_odd_neg = prepare_test_grid(lj_func, v_ego_range, -lateral_acceleration_range, -lateral_jerk_range, -roll_range, -lateral_error_range, -roll_rate_range)
+  grid_origin = prepare_test_grid(lj_func, v_ego_range, 0, 0, 0, 0, 0)
 
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
   # print sizes of origin and regular grid
@@ -416,8 +428,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   # println(out_streams, gapstr)
   # println(out_streams, "$(join([string(grid_odd_neg[:, end-i]) for i in 0:2], "\n"))\n")
 
-  function physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
-      if λ1 == 0 && λ2 == 0
+  function physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
+      if λ_monotonic == 0 && λ_odd == 0
           return 0.0
       end
       monotonicity_loss = 0.0
@@ -425,23 +437,27 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       origin_loss = 0.0
 
       model_grid = model(grid)
-      if λ1 != 0.0
+      if λ_monotonic != 0.0
           model_da = model(grid_da)
           model_dj = model(grid_dj)
+          model_de = model(grid_de)
           model_dg = model(grid_dg)
+          model_dgr = model(grid_dg_rate)
 
-          # output wrt lat accel and lat jerk should be positive,
-          # output wrt roll and apex lateral jerk should be negative
+          # d(output)/d(lat accel/jerk) and d(output)/d(error) should be positive,
+          # d(output)/d(roll) and d(output)/d(roll_rate) should be negative
           monotonicity_loss = sum(abs2, max.(0, (model_da .- model_grid) .* -1)) +
                               sum(abs2, max.(0, (model_dj .- model_grid) .* -1)) +
-                              sum(abs2, max.(0, model_dg .- model_grid)) 
+                              sum(abs2, max.(0, (model_de .- model_grid) .* -1)) +
+                              sum(abs2, max.(0, model_dg .- model_grid)) +
+                              sum(abs2, max.(0, model_dgr .- model_grid))  
       end
-      if λ2 != 0.0
+      if λ_odd != 0.0
           model_odd_neg = model(grid_odd_neg)
           odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
-      if λ3 != 0.0
+      if λ_origin != 0.0
           origin_loss = sum(abs2, model(grid_origin))
       end
 
@@ -453,12 +469,12 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
       # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
 
-      # Total loss with penalty weights λ1 and λ2
-      # λ1 = 0.0002
-      # λ2 = 0.00002
+      # Total loss with penalty weights λ_monotonic and λ_odd
+      # λ_monotonic = 0.0002
+      # λ_odd = 0.00002
 
-      # return λ2 * odd_loss
-      return λ1 * monotonicity_loss + λ2 * odd_loss + λ3 * origin_loss
+      # return λ_odd * odd_loss
+      return λ_monotonic * monotonicity_loss + λ_odd * odd_loss + λ_origin * origin_loss
   end
 
   function model_with_params(model, params)
@@ -482,7 +498,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       return sum(weighted_squared_errors) / length(y_true)
   end
 
-  function combined_loss(x, y_true, y_pred, model, λ, λ1, λ2, λ3, low, high)
+  function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
       mse = 0.0
       if low != high
         scaling_vector = get_scaling_vector(x, low, high)
@@ -491,21 +507,21 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         mse = Flux.Losses.mse(y_true, y_pred)
       end
       l2 = λ == 0.0 ? 0.0 : λ * sum(p -> sum(abs2, p), params(model))
-      physical_constraints = physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
+      physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
       return mse + l2 + physical_constraints
   end
 
-  loss(x, y, model, λ=0.0, λ1=0.0, λ2=0.0, λ3=0.0, low=1.0, high=1.0) = combined_loss(x, y', model(x), model, λ, λ1, λ2, λ3, low, high)
+  loss(x, y, model, λ=0.0, λ_monotonic=0.0, λ_odd=0.0, λ_origin=0.0, low=1.0, high=1.0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
 
 
-  # function combined_loss(x, y_true, y_pred, model, λ, λ1, λ2, λ3)
+  # function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin)
   #     mse = Flux.Losses.mse(y_true, y_pred)
   #     l2 = λ == 0.0 ? 0.0 : λ * sum(p -> sum(abs2, p), params(model))
-  #     physical_constraints = physical_constraint_losses(x, y_pred, λ1, λ2, λ3)
+  #     physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
   #     return mse + l2 + physical_constraints
   # end
 
-  # loss(x, y, model, λ=0.0, λ1=0.0, λ2=0.0, λ3=0.0) = combined_loss(x, y', model(x), model, λ, λ1, λ2, λ3)
+  # loss(x, y, model, λ=0.0, λ_monotonic=0.0, λ_odd=0.0, λ_origin=0.0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin)
 
 
   # loss(x, y) = Flux.mse(model(x), y')
@@ -637,36 +653,41 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     grid = grid |> device
     grid_da = grid_da |> device
     grid_dj = grid_dj |> device
+    grid_de = grid_de |> device
     grid_dg = grid_dg |> device
+    grid_dg_rate = grid_dg_rate |> device
     grid_odd_neg = grid_odd_neg |> device
     grid_origin = grid_origin |> device
     
     λmax = 0.000
-    λ1max = 0.002
-    λ2max = 0.000025
-    λ3max = 0.001
+    λ_monotonicmax = 0.0015
+    λ_oddmax = 0.0#000025
+    λ_originmax = 0.0#005
 
     λ_start_epoch_fraction = 0.25
-    λ1_start_epoch_fraction = 0.02
-    λ2_start_epoch_fraction = 0.25
-    λ3_start_epoch_fraction = 0.6
+    λ_monotonic_start_epoch_fraction = 0.6
+    λ_odd_start_epoch_fraction = 0.5
+    λ_origin_start_epoch_fraction = 0.7
 
     start_time = now()
     last_log_time = start_time - Dates.Millisecond(40000)
     ptime(t) = Dates.format(t, "HH:MM:SS")
     losses = []
     lambdas = []
+    ilog = 0
+    epoch_last = 1
+
     while epoch < epoch_min || (epoch < epoch_max) # && (abs(Δloss) > tol || abs(ΔΔloss) > Δtol)
-        # determine λ1 and λ2. They stay at 0 until 25% of the way through the training, then increase linearly to their max values by 75% of the way through the training
-        λ = λmax * min(1.0, max(0.0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.2)) |> device
-        λ1 = λ1max * min(1.0, max(0.0, epoch - epoch_max * λ1_start_epoch_fraction) / (epoch_max * 0.2)) |> device
-        λ2 = λ2max * min(1.0, max(0.0, epoch - epoch_max * λ2_start_epoch_fraction) / (epoch_max * 0.2)) |> device
-        λ3 = λ3max * min(1.0, max(0.0, epoch - epoch_max * λ3_start_epoch_fraction) / (epoch_max * 0.2)) |> device
+        # determine λ_monotonic and λ_odd. They stay at 0 until 25% of the way through the training, then increase linearly to their max values by 75% of the way through the training
+        λ = λmax * min(1.0, max(0.0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7)) |> device
+        λ_monotonic = λ_monotonicmax * min(1.0, max(0.0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3)) |> device
+        λ_odd = λ_oddmax * min(1.0, max(0.0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4)) |> device
+        λ_origin = λ_originmax * min(1.0, max(0.0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2)) |> device
         l = 0.0
         if device == cpu
           for (x, y) in train_data_loader
             gs = Flux.gradient(params(model)) do 
-              l = loss(x, y, model, λ, λ1, λ2, λ3)
+              l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
             end
             Flux.Optimise.update!(opt, params(model), gs)
           end
@@ -674,14 +695,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           for (x, y) in CuIterator(train_data_loader)
             for ibatch in 1:20
               gs = Flux.gradient(params(model)) do 
-                l = loss(x, y, model, λ, λ1, λ2, λ3)
+                l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
               end
               Flux.Optimise.update!(opt, params(model), gs)
               if ibatch % 2 == 0
                 epoch += 1
                 ilog += 1
                 push!(losses, l)
-                push!(lambdas, (λ, λ1, λ2, λ3))
+                push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
                 if epoch > epoch_max
                   break
                 end
@@ -693,17 +714,16 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           end
         else
           gs = Flux.gradient(params(model)) do 
-            l = loss(X_train', y_train, model, λ, λ1, λ2, λ3)
+            l = loss(X_train', y_train, model, λ, λ_monotonic, λ_odd, λ_origin)
           end
           Flux.Optimise.update!(opt, params(model), gs)
         end
 
         push!(losses, l)
-        push!(lambdas, (λ, λ1, λ2, λ3))
+        push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
         
         t = now()
-        if (t - last_log_time) > Dates.Millisecond(30000) || epoch >= epoch_max
-            ilog = 0
+        if (t - last_log_time) > Dates.Millisecond(10000) || epoch >= epoch_max
             loss_cur = l
             Δloss = loss_cur - loss_last
             if Δloss > 0.0
@@ -720,11 +740,25 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                 c1 = abs(Δloss) > tol ? ">" : "≤"
                 c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
                 cur_time = Dates.format(now(), "HH:MM:SS")
-                println(out_streams, f"{cur_time} Epoch {epoch:3d} of {epoch_max}; Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f}, ΔΔLoss: {ΔΔloss:.9f}, λ: {λ:.6G}, λ1: {λ1:.6G}, λ2: {λ2:.6G}, λ3: {λ3:.6G}")
+                # predict time remaining
+                time_str = "estimating remaining time..."
+                if epoch > 750
+                    elapsed = (t - last_log_time).value / 1000 # Milliseconds to seconds
+                    epochs = epoch - epoch_last
+                    epoch_remaining = epoch_max - epoch
+                    recent_rate = epochs / elapsed
+                    epoch_remaining_time = Dates.Millisecond(1000 * round(epoch_remaining / recent_rate))
+                    total_time = epoch_remaining_time + Dates.Millisecond(1000 * round((t - start_time).value / 1000))
+                    epoch_remaining_time_str = Dates.canonicalize(Dates.CompoundPeriod(epoch_remaining_time))
+                    epoch_total_time_str = Dates.canonicalize(Dates.CompoundPeriod(total_time))
+                    time_str = "$epoch_remaining_time_str remaining of $epoch_total_time_str total"
+                end
+                println(out_streams, f"{cur_time} Epoch {epoch:3d} of {epoch_max} ({time_str}); Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f}, ΔΔLoss: {ΔΔloss:.9f}, λ: {λ:.6G}, λ_monotonic: {λ_monotonic:.6G}, λ_odd: {λ_odd:.6G}, λ_origin: {λ_origin:.6G}")
             end
             logstepfloat *= logstepgrowth
             logstep = round(Int, logstepfloat)
             last_log_time = t
+            epoch_last = epoch
         end
         epoch += 1
         ilog += 1
@@ -745,7 +779,9 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       grid = cpu(grid)
       grid_da = cpu(grid_da)
       grid_dj = cpu(grid_dj)
+      grid_de = cpu(grid_de)
       grid_dg = cpu(grid_dg)
+      grid_dg_rate = cpu(grid_dg_rate)
       grid_odd_neg = cpu(grid_odd_neg)
       grid_origin = cpu(grid_origin)
     end
@@ -766,6 +802,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
     # Iterate through each lamda and plot it with different colors
     colors = [:red, :blue, :green, :orange]
+    loss_names = ["λ_l2_regularization", "λ_monotonic", "λ_odd", "λ_origin"]
     for i in 1:4
         lambda = [l[i] for l in lambdas]
         l_max = maximum(lambda)
@@ -773,7 +810,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
             continue
         end
         normalized_lambda = lambda ./ l_max
-        plot!(twinx(), normalized_lambda, label="", color=colors[i], ylabel="Normalized Lamda",xticks=:none)
+        plot!(twinx(), normalized_lambda, label=loss_names[i], color=colors[i], ylabel="Normalized Lamda",xticks=:none, legend=:bottomright)
     end
     savefig(p, "$model_path.training.png")
     
@@ -1012,12 +1049,12 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Configure the plot's appearance
     if si == 1
-      title!(p[1,plot_col_num], f"NN model for {car_name}\nLateral acceleration/jerk error response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
+      title!(p[1,plot_col_num], f"{car_name}\nLateral acceleration/jerk error response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     else
       title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
-    ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
+    ylabel!(p[si,plot_col_num], "steer command\n([+] = pushing right)")
   end
 
   plot_col_num += 1
@@ -1066,7 +1103,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |roll| < {max_abs_roll:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
-    ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
+    ylabel!(p[si,plot_col_num], "steer command\n([+] = pushing right)")
   end
 
   # Iterate over the speed range and create a plot for each speed
@@ -1117,14 +1154,179 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       title!(p[si,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph w/ |lat jerk| < {max_abs_lat_jerk:.2G}")
     end
     xlabel!(p[si,plot_col_num], "lateral acceleration (m/s²; [+] = right turn)")
-    ylabel!(p[si,plot_col_num], "steer command\n([+] = right turn)")
+    ylabel!(p[si,plot_col_num], "steer command\n([+] = pushing right)")
   end
 
 
   # Display the plot
-  savefig(p, "$plot_path/$car_name.png")
-  savefig(p, "$plot_path/$car_name.pdf")
-  display(p)
+  savefig(p, "$plot_path/$car_name-a.png")
+  savefig(p, "$plot_path/$car_name-a.pdf")
+  # display(p)
+
+  # Now plot model response to error, lateral jerk, and roll.
+  # Each row will be different speeds as above. The left column will show the model output
+  # as a function of error (instantaneous lateral jerk) at different lateral accels (as different lines). 
+  # The second column will show model output as a function of lateral jerk (i.e. past/future lateral accels).
+  # The third column will be as a function of *constant* roll (all past/future the same), and the 
+  # fourth column will be as a function of dynamic roll (past/future changing linearly).
+
+  plot_col_num = 1
+  lateral_accel_range = -2.0:1.0:2.0
+  lateral_jerk_range = -3.0:0.1:3.0
+  roll_range = -0.2:0.01:0.2
+
+  p = plot(layout = (size(collect(speed_range), 1), 4), legend=:bottomright, size=(2500, 2300), margin=8mm)
+
+  # first w.r.t. error
+  for (plot_row_num, speed) in enumerate(speed_range)
+    vline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
+
+    # Plot the model output
+    ci = 1
+    for la in lateral_accel_range
+      x_model = []
+      y_model = []
+      for lj in lateral_jerk_range
+          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
+          lat_accels = [la for t in t_list]
+          rolls = [0.0 for t in t_list]
+          input_data = [speed la lj 0.0]
+          input_data = hcat(input_data, lat_accels, rolls)
+          steer_command = feedforward_function(input_data)
+          push!(x_model, lj)
+          push!(y_model, steer_command)
+      end
+      plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-3.0, 3.0), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
+      ci += 1
+    end
+
+    # Configure the plot's appearance
+    if plot_row_num == 1
+      title!(p[1,plot_col_num], f"Error response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    else
+      title!(p[plot_row_num,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    end
+    xlabel!(p[plot_row_num,plot_col_num], "lateral acceleration/jerk error (m/s²; [+] = correcting to the right)")
+    ylabel!(p[plot_row_num,plot_col_num], "steer command\n([+] = pushing right)")
+  end
+
+  # now plot model response to lateral jerk
+  plot_col_num += 1
+  for (plot_row_num, speed) in enumerate(speed_range)
+    vline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
+
+    # Plot the model output
+    ci = 1
+    for la in lateral_accel_range
+      x_model = []
+      y_model = []
+      for lj in lateral_jerk_range
+          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
+          lat_accels = [la + t * lj for t in t_list]
+          rolls = [0.0 for t in t_list]
+          input_data = [speed la 0.0 0.0]
+          input_data = hcat(input_data, lat_accels, rolls)
+          steer_command = feedforward_function(input_data)
+          push!(x_model, lj)
+          push!(y_model, steer_command)
+      end
+      plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-3.0, 3.0), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
+      ci += 1
+    end
+
+    # Configure the plot's appearance
+    if plot_row_num == 1
+      title!(p[1,plot_col_num], f"{car_name}\nLateral jerk response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    else
+      title!(p[plot_row_num,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    end
+    xlabel!(p[plot_row_num,plot_col_num], "lateral jerk (m/s²; [+] = wheel moving to the right)")
+    ylabel!(p[plot_row_num,plot_col_num], "steer command\n([+] = pushing right)")
+  end
+
+  # now plot model response to constant roll
+  plot_col_num += 1
+  for (plot_row_num, speed) in enumerate(speed_range)
+    vline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
+
+    # Plot the model output
+    ci = 1
+    for la in lateral_accel_range
+      x_model = []
+      y_model = []
+      for ro in roll_range
+          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
+          lat_accels = [la for t in t_list]
+          rolls = [ro for t in t_list]
+          input_data = [speed la 0.0 ro]
+          input_data = hcat(input_data, lat_accels, rolls)
+          steer_command = feedforward_function(input_data)
+          push!(x_model, ro)
+          push!(y_model, steer_command)
+      end
+      plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-0.2, 0.2), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
+      ci += 1
+    end
+
+    # Configure the plot's appearance
+    if plot_row_num == 1
+      title!(p[1,plot_col_num], f"Roll response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    else
+      title!(p[plot_row_num,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    end
+    xlabel!(p[plot_row_num,plot_col_num], "Road roll (radians; [+] = leaning right)")
+    ylabel!(p[plot_row_num,plot_col_num], "steer command\n([+] = pushing right)")
+  end
+
+  # now plot model response to roll rate (same as previous, but
+  # lateral acceleration lines are replaced with lines with different roll rates)
+  roll_rate_range = -0.4:0.2:0.4
+  plot_col_num += 1
+  for (plot_row_num, speed) in enumerate(speed_range)
+    vline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
+    hline!(p[plot_row_num,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
+
+    # Plot the model output
+    ci = 1
+    for rr in roll_rate_range
+      x_model = []
+      y_model = []
+      for ro in roll_range
+          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
+          lat_accels = [0.0 for t in t_list]
+          rolls = [ro + t * rr for t in t_list]
+          input_data = [speed 0.0 0.0 ro]
+          input_data = hcat(input_data, lat_accels, rolls)
+          steer_command = feedforward_function(input_data)
+          push!(x_model, ro)
+          push!(y_model, steer_command)
+      end
+      plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="roll rate = $rr", linewidth=line_width, xlims=(-0.2, 0.2), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
+      ci += 1
+    end
+
+    # Configure the plot's appearance
+    if plot_row_num == 1
+      title!(p[1,plot_col_num], f"Roll rate [rad/s] response\n{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    else
+      title!(p[plot_row_num,plot_col_num], f"{(speed-speed_step/2)*2.24:.2G}-{(speed+speed_step/2)*2.24:.2G} mph")
+    end
+    xlabel!(p[plot_row_num,plot_col_num], "Road roll (radians; [+] = leaning right)")
+    ylabel!(p[plot_row_num,plot_col_num], "steer command\n([+] = pushing right)")
+
+  end
+
+    # Display the plot
+  savefig(p, "$plot_path/$car_name-b.png")
+  savefig(p, "$plot_path/$car_name-b.pdf")
+  # display(p)
 end
 
 function multiline_string(strings::Vector{String}, n::Int; prefix="")
@@ -1166,7 +1368,7 @@ function create_model(in_file, out_dir_base)
   out_streams = TeeStream(stdout, logfile)  # Create a Tee output stream
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
   use_existing_input = false
-  if isfile(preprocess_infile) && stat(in_file).mtime < stat(preprocess_infile).mtime
+  if isfile(preprocess_infile) # && stat(in_file).mtime < stat(preprocess_infile).mtime
       use_existing_input = true
       # return
   end
