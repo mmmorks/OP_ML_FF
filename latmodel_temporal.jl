@@ -661,8 +661,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     
     λmax = 0.000
     λ_monotonicmax = 0.0015
-    λ_oddmax = 0.0#000025
-    λ_originmax = 0.0#005
+    λ_oddmax = 0.000001
+    λ_originmax = 0.0001
 
     λ_start_epoch_fraction = 0.25
     λ_monotonic_start_epoch_fraction = 0.6
