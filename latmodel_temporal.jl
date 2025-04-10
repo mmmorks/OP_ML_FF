@@ -6,6 +6,7 @@
 #     "MultivariateStats",
 #     "Flux",
 #     "MLDataUtils",
+#     "MLUtils",
 #     "Statistics",
 #     "LinearAlgebra",
 #     "PyFormattedStrings",
@@ -39,7 +40,7 @@ using StatsBase
 using MultivariateStats
 using Flux
 using Flux: params, train!, mse
-using Flux.Data: DataLoader
+using MLUtils: DataLoader
 using DataFrames
 using MLDataUtils #: splitobs, rescale
 using Statistics #: mean, std
@@ -1408,6 +1409,8 @@ end
 
 # main(args["input-dir"])
 
-main("/mnt/video/scratch-video/latmodels")
+# Use the current user's home directory instead of hardcoding
+home_dir = ENV["HOME"]
+main("$home_dir/Downloads/rlogs/output/GENESIS")
 
 
