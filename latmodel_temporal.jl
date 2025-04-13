@@ -24,6 +24,7 @@
 #     "JSON",
 #     "Feather",
 #     "Dates",
+#     "Metal",
 #     "CUDA",
 #     "ArgParse",
 #     "ModelingToolkit",
@@ -40,6 +41,7 @@ using StatsBase
 using MultivariateStats
 using Flux
 using Flux: params, train!, mse
+using Flux.Optimisers
 using MLUtils: DataLoader
 using DataFrames
 using MLDataUtils #: splitobs, rescale
@@ -61,6 +63,7 @@ using InvertedIndices
 using JSON
 using Feather
 using Dates
+using Metal
 using CUDA
 using CUDA: CuIterator
 using ArgParse
@@ -68,6 +71,22 @@ using Optim
 using ModelingToolkit
 using TeeStreams
 
+# Custom AdaGrad optimizer that uses Float32 literals
+struct CustomAdaGrad <: Optimisers.AbstractRule
+  eta::Float32
+  epsilon::Float32
+end
+
+# Define the update rule
+function Optimisers.apply!(o::CustomAdaGrad, state, x, Δ)
+  η, ϵ = o.eta, o.epsilon
+  acc = state
+  @. acc += Δ^2
+  @. Δ *= η / (√acc + ϵ)
+  return acc
+end
+
+Optimisers.init(o::CustomAdaGrad, x::AbstractArray) = fill!(similar(x, Float32), 0.0f0)
 
 t_list = [-0.3 -0.2 -0.1 0.3 0.6 1.0 1.5]
 
@@ -160,9 +179,9 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     end
 
     # if lateral_jerk is always zero, replace with approximation from lateral accel
-    if all(data[!, :lateral_jerk] .== 0.0)
+    if all(data[!, :lateral_jerk] .== 0.0f0)
         println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
-        data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03
+        data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03f0
     end
 
     # filter data
@@ -324,10 +343,19 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   test = vcat(test, data_sym)
   println(out_streams, "Test data after copying symmmetric data: $(size(test,1))")
 
-  device = CUDA.functional() ? gpu : cpu
-  CUDA.allowscalar(false)
-  println(out_streams, "Using device: $(device)")
-  # device = cpu
+  # Check for Metal first (Apple Silicon), then CUDA, then fall back to CPU
+  if Metal.functional()
+    device = gpu
+    Metal.allowscalar(false)
+    println(out_streams, "Using device: Metal GPU")
+  elseif CUDA.functional()
+    device = gpu
+    CUDA.allowscalar(false)
+    println(out_streams, "Using device: CUDA GPU")
+  else
+    device = cpu
+    println(out_streams, "Using device: CPU")
+  end
 
   # normalize the data
   X_train = Matrix(select(train, Not([:steer_cmd])))
@@ -408,37 +436,17 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   grid_origin = prepare_test_grid(lj_func, v_ego_range, 0, 0, 0, 0, 0)
 
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
-  # print sizes of origin and regular grid
-
-
-  # # print the fist 5 rows of the grid, one row per line, with names of the columns as headers
-  # gapstr = "       ⋮                         ⋱                         ⋮"
-  # println(out_streams, "Grid: $(varnames)\n$(join([string(grid[:, i]) for i in 1:3], "\n"))")
-  # println(out_streams, gapstr)
-  # println(out_streams, "$(join([string(grid[:, end-i]) for i in 0:2], "\n"))\n")
-  # println(out_streams, "Grid_da: $(varnames)\n$(join([string(grid_da[:, i]) for i in 1:3], "\n"))")
-  # println(out_streams, gapstr)
-  # println(out_streams, "$(join([string(grid_da[:, end-i]) for i in 0:2], "\n"))\n")
-  # println(out_streams, "Grid_dj: $(varnames)\n$(join([string(grid_dj[:, i]) for i in 1:3], "\n"))")
-  # println(out_streams, gapstr)
-  # println(out_streams, "$(join([string(grid_dj[:, end-i]) for i in 0:2], "\n"))\n")
-  # println(out_streams, "Grid_dg: $(varnames)\n$(join([string(grid_dg[:, i]) for i in 1:3], "\n"))")
-  # println(out_streams, gapstr)
-  # println(out_streams, "$(join([string(grid_dg[:, end-i]) for i in 0:2], "\n"))\n")
-  # println(out_streams, "Grid_odd_neg: $(varnames)\n$(join([string(grid_odd_neg[:, i]) for i in 1:3], "\n"))")
-  # println(out_streams, gapstr)
-  # println(out_streams, "$(join([string(grid_odd_neg[:, end-i]) for i in 0:2], "\n"))\n")
 
   function physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-      if λ_monotonic == 0 && λ_odd == 0
-          return 0.0
+      if λ_monotonic == 0.0f0 && λ_odd == 0.0f0
+          return 0.0f0
       end
-      monotonicity_loss = 0.0
-      odd_loss = 0.0
-      origin_loss = 0.0
+      monotonicity_loss = 0.0f0
+      odd_loss = 0.0f0
+      origin_loss = 0.0f0
 
       model_grid = model(grid)
-      if λ_monotonic != 0.0
+      if λ_monotonic != 0.0f0
           model_da = model(grid_da)
           model_dj = model(grid_dj)
           model_de = model(grid_de)
@@ -453,12 +461,12 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                               sum(abs2, max.(0, model_dg .- model_grid)) +
                               sum(abs2, max.(0, model_dgr .- model_grid))  
       end
-      if λ_odd != 0.0
+      if λ_odd != 0.0f0
           model_odd_neg = model(grid_odd_neg)
           odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
-      if λ_origin != 0.0
+      if λ_origin != 0.0f0
           origin_loss = sum(abs2, model(grid_origin))
       end
 
@@ -500,115 +508,37 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
-      mse = 0.0
+      mse = 0.0f0
       if low != high
         scaling_vector = get_scaling_vector(x, low, high)
         mse = custom_mse(y_true, y_pred, scaling_vector)
       else
         mse = Flux.Losses.mse(y_true, y_pred)
       end
-      l2 = λ == 0.0 ? 0.0 : λ * sum(p -> sum(abs2, p), params(model))
+      l2 = λ == 0.0f0 ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
       return mse + l2 + physical_constraints
   end
 
-  loss(x, y, model, λ=0.0, λ_monotonic=0.0, λ_odd=0.0, λ_origin=0.0, low=1.0, high=1.0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
-
-
-  # function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin)
-  #     mse = Flux.Losses.mse(y_true, y_pred)
-  #     l2 = λ == 0.0 ? 0.0 : λ * sum(p -> sum(abs2, p), params(model))
-  #     physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-  #     return mse + l2 + physical_constraints
-  # end
-
-  # loss(x, y, model, λ=0.0, λ_monotonic=0.0, λ_odd=0.0, λ_origin=0.0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin)
-
-
-  # loss(x, y) = Flux.mse(model(x), y')
-
-  function simulated_annealing!(model, loss, x, y, T0, alpha, iter)
-      params = Flux.params(model)
-      best_params = deepcopy(params)
-      best_loss = loss(x, y, model)
-      last_log_time = now()
-      ptime(t) = Dates.format(t, "HH:MM:SS")
-      T = T0
-      for i in 1:iter
-          # perform 50 epochs of training
-          epoch = 0
-          opt = Flux.AdaGrad()
-          max_epochs = 3
-          # if i > iter * 0.9
-          #     max_epochs += Int(round((i - (iter * 0.9))^(2.0)))
-          # end
-
-          while epoch < max_epochs
-            new_params = [p .+ 0.04f0 .* CUDA.randn(Float32, size(p)) for p in best_params]
-            Flux.loadparams!(model, new_params)
-            params = Flux.params(model)
-            new_loss = 0.0
-            epoch2 = 0
-            while epoch2 < 3
-                gs = Flux.gradient(params) do 
-                  new_loss = loss(X_train', y_train, model)
-                end
-                Flux.Optimise.update!(opt, params, gs)
-                epoch2 += 1
-                epoch += 1
-            end
-            if new_loss < best_loss || exp((best_loss - new_loss) / T) > rand()
-                best_loss = new_loss
-                best_params = deepcopy(params)
-            end
-          end
-
-          Flux.loadparams!(model, best_params)
-          params = Flux.params(model)
-          epoch = 0
-          while epoch < max_epochs
-              gs = Flux.gradient(params) do 
-                best_loss = loss(X_train', y_train, model)
-              end
-              Flux.Optimise.update!(opt, params, gs)
-              epoch += 1
-          end
-          best_params = deepcopy(params)
-
-
-          T *= alpha
-
-          # Print iteration details
-          t = now()
-          if (t - last_log_time) > Dates.Millisecond(2000)
-              println(out_streams, "hybrid SA round 1 $(ptime(t)) Iteration: $i, Temperature: $(round(T, digits=8)), Loss: $(round(best_loss, digits=8)) after $epoch epochs")
-              last_log_time = t
-          end
-      end
-
-      Flux.loadparams!(model, best_params)
-  end
-
-
-
+  loss(x, y, model, λ=0.0f0, λ_monotonic=0.0f0, λ_odd=0.0f0, λ_origin=0.0f0, low=1.0f0, high=1.0f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
   # opt = Flux.Nesterov()
   opt = Flux.AdaGrad()
+  state_tree = Optimisers.setup(opt, model)
 
   # train the model (with batches of shuffled data)
-  tol = log10(size(X_train, 1)) > 7 ? 1e-4 : 1e-6
-  Δtol = log10(size(X_train, 1)) > 7 ? 1e-4 : 5e-5
+  tol = log10(size(X_train, 1)) > 7 ? 1f-4 : 1f-6
+  Δtol = log10(size(X_train, 1)) > 7 ? 1f-4 : 5f-5
   logstep = device == gpu ? 50 : log10(size(X_train, 1)) > 7 ? 3 : 10
   logstepgrowth = 1
   logstepfloat = Float32(logstep)
-  logstepbig = 10
-  Δloss = Inf
-  ΔΔloss = Inf
-  Δloss_last = 0.0
-  loss_last = Inf
-  loss_cur = 0.0
+  Δloss = Inf32
+  ΔΔloss = Inf32
+  Δloss_last = 0.0f0
+  loss_last = Inf32
+  loss_cur = 0.0f0
   stall_check_count = device == gpu ? 50000 : 15
   stall_count = 0
   epoch = 1
@@ -638,18 +568,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       end
     end
 
-    # first some simulated annealing
-    T0 = 10.0
-    alpha = 0.85
-    iter = 150
-    # simulated_annealing!(model, loss, X_train', y_train, T0, alpha, iter)
-    # println(out_streams, "Loss after simulated annealing: $(loss(X_train', y_train, model))")
-
-    if size(y_train, 1) > batch_size
-      X_train = cpu(X_train)
-      y_train = cpu(y_train)
-    end
-    train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)
+    #if size(y_train, 1) > batch_size
+    #  X_train = cpu(X_train)
+    #  y_train = cpu(y_train)
+    #end
+    train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)# |> device
 
     grid = grid |> device
     grid_da = grid_da |> device
@@ -660,15 +583,15 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     grid_odd_neg = grid_odd_neg |> device
     grid_origin = grid_origin |> device
     
-    λmax = 0.000
-    λ_monotonicmax = 0.0015
-    λ_oddmax = 0.000001
-    λ_originmax = 0.0001
+    λmax = 0.000f0
+    λ_monotonicmax = 0.0015f0
+    λ_oddmax = 0.000001f0
+    λ_originmax = 0.0001f0
 
-    λ_start_epoch_fraction = 0.25
-    λ_monotonic_start_epoch_fraction = 0.6
-    λ_odd_start_epoch_fraction = 0.5
-    λ_origin_start_epoch_fraction = 0.7
+    λ_start_epoch_fraction = 0.25f0
+    λ_monotonic_start_epoch_fraction = 0.6f0
+    λ_odd_start_epoch_fraction = 0.5f0
+    λ_origin_start_epoch_fraction = 0.7f0
 
     start_time = now()
     last_log_time = start_time - Dates.Millisecond(40000)
@@ -680,25 +603,27 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
     while epoch < epoch_min || (epoch < epoch_max) # && (abs(Δloss) > tol || abs(ΔΔloss) > Δtol)
         # determine λ_monotonic and λ_odd. They stay at 0 until 25% of the way through the training, then increase linearly to their max values by 75% of the way through the training
-        λ = λmax * min(1.0, max(0.0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7)) |> device
-        λ_monotonic = λ_monotonicmax * min(1.0, max(0.0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3)) |> device
-        λ_odd = λ_oddmax * min(1.0, max(0.0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4)) |> device
-        λ_origin = λ_originmax * min(1.0, max(0.0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2)) |> device
-        l = 0.0
+        λ = λmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7f0)) |> device
+        λ_monotonic = λ_monotonicmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3f0)) |> device
+        λ_odd = λ_oddmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4f0)) |> device
+        λ_origin = λ_originmax * min(1.0, max(0.0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
+        l = 0.0f0
         if device == cpu
           for (x, y) in train_data_loader
-            gs = Flux.gradient(params(model)) do 
+            gs = Flux.gradient(model) do 
               l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
             end
-            Flux.Optimise.update!(opt, params(model), gs)
+            state_tree, model = Optimisers.update!(state_tree, model, gs[1])
+            #Flux.Optimise.update!(opt, params(model), gs)
           end
         elseif size(y_train, 1) > batch_size
-          for (x, y) in CuIterator(train_data_loader)
+          # Handle batch processing for both Metal and CUDA
+          for (x, y) in train_data_loader
             for ibatch in 1:20
-              gs = Flux.gradient(params(model)) do 
+              gs = Flux.gradient(model) do 
                 l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
               end
-              Flux.Optimise.update!(opt, params(model), gs)
+              state_tree, model = Optimisers.update!(state_tree, model, gs[1])
               if ibatch % 2 == 0
                 epoch += 1
                 ilog += 1
@@ -714,10 +639,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
             end
           end
         else
-          gs = Flux.gradient(params(model)) do 
+          gs = Flux.gradient(model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin) do model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin
             l = loss(X_train', y_train, model, λ, λ_monotonic, λ_odd, λ_origin)
-          end
-          Flux.Optimise.update!(opt, params(model), gs)
+          end;
+          state_tree, model = Optimisers.update!(state_tree, model, gs[1])
         end
 
         push!(losses, l)
@@ -727,10 +652,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         if (t - last_log_time) > Dates.Millisecond(10000) || epoch >= epoch_max
             loss_cur = l
             Δloss = loss_cur - loss_last
-            if Δloss > 0.0
+            if Δloss > 0.0f0
                 stall_count += 1
             end
-            if stall_count ≥ stall_check_count && Δloss < 0.0
+            if stall_count ≥ stall_check_count && Δloss < 0.0f0
                 println(out_streams, "Stalled at epoch $epoch, loss $loss_cur")
                 break
             end
@@ -799,7 +724,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
     # Plot the loss values with a black line on the left axis
     p = plot(x, losses, label="Loss", color=:black, ylabel="Loss", xlabel="Epoch", yscale=:log10, legend=:topleft)
-    # ylims!(p, (0.0, mean_loss + 4 * std_loss))
 
     # Iterate through each lamda and plot it with different colors
     colors = [:red, :blue, :green, :orange]
@@ -807,7 +731,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     for i in 1:4
         lambda = [l[i] for l in lambdas]
         l_max = maximum(lambda)
-        if l_max == 0.0
+        if l_max == 0.0f0
             continue
         end
         normalized_lambda = lambda ./ l_max
@@ -1370,7 +1294,7 @@ function create_model(in_file, out_dir_base)
   preprocess_infile = replace(in_file, ".feather" => "_balanced.feather")
   use_existing_input = false
   if isfile(preprocess_infile) # && stat(in_file).mtime < stat(preprocess_infile).mtime
-      use_existing_input = true
+      #use_existing_input = true
       # return
   end
   
@@ -1412,5 +1336,3 @@ end
 # Use the current user's home directory instead of hardcoding
 home_dir = ENV["HOME"]
 main("$home_dir/Downloads/rlogs/output/GENESIS")
-
-
