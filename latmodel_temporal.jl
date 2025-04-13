@@ -179,7 +179,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     end
 
     # if lateral_jerk is always zero, replace with approximation from lateral accel
-    if all(x -> isapprox(x, 0.0f0), data[!, :lateral_jerk])
+    if all(data[!, :lateral_jerk] .≈ 0.0f0)
         println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
         data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03f0
     end
@@ -438,7 +438,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
 
   function physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-      if isapprox(λ_monotonic, 0.0f0) && isapprox(λ_odd, 0.0f0)
+      if λ_monotonic ≈ 0.0f0 && λ_odd ≈ 0.0f0
           return 0.0f0
       end
       monotonicity_loss = 0.0f0
@@ -446,7 +446,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       origin_loss = 0.0f0
 
       model_grid = model(grid)
-      if !isapprox(λ_monotonic, 0.0f0)
+      if λ_monotonic ≉ 0.0f0
           model_da = model(grid_da)
           model_dj = model(grid_dj)
           model_de = model(grid_de)
@@ -461,12 +461,12 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                               sum(abs2, max.(0, model_dg .- model_grid)) +
                               sum(abs2, max.(0, model_dgr .- model_grid))  
       end
-      if !isapprox(λ_odd, 0.0f0)
+      if λ_odd ≉ 0.0f0
           model_odd_neg = model(grid_odd_neg)
           odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
-      if !isapprox(λ_origin, 0.0f0)
+      if λ_origin ≉ 0.0f0
           origin_loss = sum(abs2, model(grid_origin))
       end
 
@@ -509,13 +509,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
       mse = 0.0f0
-      if !isapprox(low, high)
+      if low ≉ high
         scaling_vector = get_scaling_vector(x, low, high)
         mse = custom_mse(y_true, y_pred, scaling_vector)
       else
         mse = Flux.Losses.mse(y_true, y_pred)
       end
-      l2 = isapprox(λ, 0.0f0) ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
+      l2 = λ ≈ 0.0f0 ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
       return mse + l2 + physical_constraints
   end
@@ -543,7 +543,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   stall_count = 0
   epoch = 1
   ilog = logstep + 1
-  epoch_max = device == gpu ? 20000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
+  epoch_max = device == gpu ? 10000 : log10(size(X_train, 1)) > 6 ? 150 : 1000
   epoch_min = 25
   batch_size = 200000
 
@@ -606,29 +606,30 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         λ = λmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7f0)) |> device
         λ_monotonic = λ_monotonicmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3f0)) |> device
         λ_odd = λ_oddmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4f0)) |> device
-        λ_origin = λ_originmax * min(1.0, max(0.0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
+        λ_origin = λ_originmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
         l = 0.0f0
         if device == cpu
           for (x, y) in train_data_loader
-            gs = Flux.gradient(model) do 
+            gs = Flux.gradient(model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin) do model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin
               l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
             end
             state_tree, model = Optimisers.update!(state_tree, model, gs[1])
-            #Flux.Optimise.update!(opt, params(model), gs)
           end
         elseif size(y_train, 1) > batch_size
           # Handle batch processing for both Metal and CUDA
           for (x, y) in train_data_loader
             for ibatch in 1:20
-              gs = Flux.gradient(model) do 
+              gs = Flux.gradient(model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin) do model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin
                 l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
               end
               state_tree, model = Optimisers.update!(state_tree, model, gs[1])
               if ibatch % 2 == 0
                 epoch += 1
                 ilog += 1
-                push!(losses, l)
-                push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
+                if ibatch % 50 == 0
+                  push!(losses, l)
+                  push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
+                end
                 if epoch > epoch_max
                   break
                 end
@@ -645,17 +646,19 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           state_tree, model = Optimisers.update!(state_tree, model, gs[1])
         end
 
-        push!(losses, l)
-        push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
+        if false
+          push!(losses, l)
+          push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
+        end
         
         t = now()
         if (t - last_log_time) > Dates.Millisecond(10000) || epoch >= epoch_max
             loss_cur = l
             Δloss = loss_cur - loss_last
-            if Δloss > 0.0f0
+            if Δloss > -eps(Float32)
                 stall_count += 1
             end
-            if stall_count ≥ stall_check_count && Δloss < 0.0f0
+            if stall_count ≥ stall_check_count && Δloss < eps(Float32)
                 println(out_streams, "Stalled at epoch $epoch, loss $loss_cur")
                 break
             end
@@ -817,7 +820,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
             result_model = feedforward_function(x, zero_bias=zero_bias)  # Model evaluation
             result_manual = feedforward_function_manual(x, zero_bias=zero_bias)  # Manual evaluation
             test_dict[xstr] = result_model
-            if !isapprox(result_model, result_manual, atol=5e-5)
+            if result_model ≉ result_manual
               println(out_streams, "Mismatch at input: $x")
               println(out_streams, "Model: $result_model, Manual: $result_manual")
               return false
