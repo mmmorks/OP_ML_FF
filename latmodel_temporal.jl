@@ -179,7 +179,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     end
 
     # if lateral_jerk is always zero, replace with approximation from lateral accel
-    if all(data[!, :lateral_jerk] .== 0.0f0)
+    if all(x -> isapprox(x, 0.0f0), data[!, :lateral_jerk])
         println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
         data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03f0
     end
@@ -438,7 +438,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
 
   function physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-      if λ_monotonic == 0.0f0 && λ_odd == 0.0f0
+      if isapprox(λ_monotonic, 0.0f0) && isapprox(λ_odd, 0.0f0)
           return 0.0f0
       end
       monotonicity_loss = 0.0f0
@@ -446,7 +446,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       origin_loss = 0.0f0
 
       model_grid = model(grid)
-      if λ_monotonic != 0.0f0
+      if !isapprox(λ_monotonic, 0.0f0)
           model_da = model(grid_da)
           model_dj = model(grid_dj)
           model_de = model(grid_de)
@@ -461,12 +461,12 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                               sum(abs2, max.(0, model_dg .- model_grid)) +
                               sum(abs2, max.(0, model_dgr .- model_grid))  
       end
-      if λ_odd != 0.0f0
+      if !isapprox(λ_odd, 0.0f0)
           model_odd_neg = model(grid_odd_neg)
           odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
-      if λ_origin != 0.0f0
+      if !isapprox(λ_origin, 0.0f0)
           origin_loss = sum(abs2, model(grid_origin))
       end
 
@@ -509,13 +509,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
       mse = 0.0f0
-      if low != high
+      if !isapprox(low, high)
         scaling_vector = get_scaling_vector(x, low, high)
         mse = custom_mse(y_true, y_pred, scaling_vector)
       else
         mse = Flux.Losses.mse(y_true, y_pred)
       end
-      l2 = λ == 0.0f0 ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
+      l2 = isapprox(λ, 0.0f0) ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
       return mse + l2 + physical_constraints
   end
