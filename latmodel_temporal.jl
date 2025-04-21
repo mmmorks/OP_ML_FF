@@ -86,10 +86,10 @@ function Optimisers.apply!(o::CustomAdaGrad, state, x, Δ)
   return acc
 end
 
-Optimisers.init(o::CustomAdaGrad, x::AbstractArray) = fill!(similar(x, Float32), 0.0f0)
+Optimisers.init(o::CustomAdaGrad, x::AbstractArray) = fill!(similar(x, Float32), 0f0)
 
 # Define constants
-const t_list = [-0.3f0 -0.2f0 -0.1f0 0.3f0 0.6f0 1.0f0 1.5f0]
+const t_list = [-0.3f0 -0.2f0 -0.1f0 0.3f0 0.6f0 1f0 1.5f0]
 
 function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)::String
   full_path = joinpath(path, folder_name)
@@ -175,7 +175,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     end
 
     # if lateral_jerk is always zero, replace with approximation from lateral accel
-    if all(data[!, :lateral_jerk] .≈ 0.0f0)
+    if all(data[!, :lateral_jerk] .≈ 0f0)
         println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
         data[!, :lateral_jerk] = @fastmath @. (data[!, :lateral_accel_p03] - data[!, :lateral_accel]) / 0.03f0
     end
@@ -423,17 +423,17 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
 
   function physical_constraint_losses(x, y_pred, λ_monotonic::Float32, λ_odd::Float32, λ_origin::Float32) :: Float32
-      if λ_monotonic ≈ 0.0f0 && λ_odd ≈ 0.0f0 && λ_origin ≈ 0.0f0
-          return 0.0f0
+      if λ_monotonic ≈ 0f0 && λ_odd ≈ 0f0 && λ_origin ≈ 0f0
+          return 0f0
       end
       
-      monotonicity_loss = 0.0f0
-      odd_loss = 0.0f0
-      origin_loss = 0.0f0
+      monotonicity_loss = 0f0
+      odd_loss = 0f0
+      origin_loss = 0f0
 
       model_grid = model(grid)
       
-      if λ_monotonic ≉ 0.0f0
+      if λ_monotonic ≉ 0f0
           model_da = model(grid_da)
           model_dj = model(grid_dj)
           model_de = model(grid_de)
@@ -442,19 +442,19 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
           # d(output)/d(lat accel/jerk) and d(output)/d(error) should be positive,
           # d(output)/d(roll) and d(output)/d(roll_rate) should be negative
-          @fastmath monotonicity_loss = sum(abs2, max.(0.0f0, (model_da .- model_grid) .* -1.0f0)) +
-                              sum(abs2, max.(0.0f0, (model_dj .- model_grid) .* -1.0f0)) +
-                              sum(abs2, max.(0.0f0, (model_de .- model_grid) .* -1.0f0)) +
-                              sum(abs2, max.(0.0f0, model_dg .- model_grid)) +
-                              sum(abs2, max.(0.0f0, model_dgr .- model_grid))  
+          @fastmath monotonicity_loss = sum(abs2, max.(0f0, (model_da .- model_grid) .* -1f0)) +
+                              sum(abs2, max.(0f0, (model_dj .- model_grid) .* -1f0)) +
+                              sum(abs2, max.(0f0, (model_de .- model_grid) .* -1f0)) +
+                              sum(abs2, max.(0f0, model_dg .- model_grid)) +
+                              sum(abs2, max.(0f0, model_dgr .- model_grid))  
       end
       
-      if λ_odd ≉ 0.0f0
+      if λ_odd ≉ 0f0
           model_odd_neg = model(grid_odd_neg)
           @fastmath odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
-      if λ_origin ≉ 0.0f0
+      if λ_origin ≉ 0f0
           @fastmath origin_loss = sum(abs2, model(grid_origin))
       end
 
@@ -483,7 +483,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   function combined_loss(x, y_true, y_pred, model, λ::Float32, λ_monotonic::Float32, λ_odd::Float32, λ_origin::Float32, low::Float32, high::Float32)
-      mse = 0.0f0
+      mse = 0f0
       if low ≉ high
         scaling_vector = get_scaling_vector(x, low, high)
         mse = custom_mse(y_true, y_pred, scaling_vector)
@@ -491,13 +491,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         mse = Flux.Losses.mse(y_true, y_pred)
       end
       
-      l2 = λ ≈ 0.0f0 ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
+      l2 = λ ≈ 0f0 ? 0f0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
       
       @fastmath return mse + l2 + physical_constraints
   end
 
-  loss(x, y, model, λ::Float32=0.0f0, λ_monotonic::Float32=0.0f0, λ_odd::Float32=0.0f0, λ_origin::Float32=0.0f0, low::Float32=1.0f0, high::Float32=1.0f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
+  loss(x, y, model, λ::Float32=0f0, λ_monotonic::Float32=0f0, λ_odd::Float32=0f0, λ_origin::Float32=0f0, low::Float32=1f0, high::Float32=1f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -513,9 +513,9 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   logstepfloat = Float32(logstep)
   Δloss = Inf32
   ΔΔloss = Inf32
-  Δloss_last = 0.0f0
+  Δloss_last = 0f0
   loss_last = Inf32
-  loss_cur = 0.0f0
+  loss_cur = 0f0
   stall_check_count = device == gpu ? 50000 : 15
   stall_count = 0
   epoch = 1
@@ -580,11 +580,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
     while epoch < epoch_min || (epoch < epoch_max) # && (abs(Δloss) > tol || abs(ΔΔloss) > Δtol)
         # determine λ_monotonic and λ_odd. They stay at 0 until 25% of the way through the training, then increase linearly to their max values by 75% of the way through the training
-        λ = λmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7f0)) |> device
-        λ_monotonic = λ_monotonicmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3f0)) |> device
-        λ_odd = λ_oddmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4f0)) |> device
-        λ_origin = λ_originmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
-        l = 0.0f0
+        λ = λmax * min(1f0, max(0f0, epoch - epoch_max * λ_start_epoch_fraction) / (epoch_max * 0.7f0)) |> device
+        λ_monotonic = λ_monotonicmax * min(1f0, max(0f0, epoch - epoch_max * λ_monotonic_start_epoch_fraction) / (epoch_max * 0.3f0)) |> device
+        λ_odd = λ_oddmax * min(1f0, max(0f0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4f0)) |> device
+        λ_origin = λ_originmax * min(1f0, max(0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
+        l = 0f0
         if size(y_train, 1) > batch_size
           # Handle batch processing for both Metal and CUDA
           for (x, y) in train_data_loader
@@ -699,7 +699,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     for i in 1:4
         lambda = [l[i] for l in lambdas]
         l_max = maximum(lambda)
-        if l_max == 0.0f0
+        if l_max == 0f0
             continue
         end
         normalized_lambda = lambda ./ l_max
@@ -925,7 +925,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       for (i, la) in enumerate(lateral_acceleration_range)
           # Fill pre-allocated arrays
           fill!(lat_accels, la)
-          fill!(rolls, 0.0f0)
+          fill!(rolls, 0f0)
           
           # Create input data
           input_data = [speed la lj 0.0]
@@ -979,7 +979,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           # Calculate lat_accels with lateral jerk
           @inbounds for (idx, t) in enumerate(t_list)
               lat_accels[idx] = la + lj * t
-              rolls[idx] = 0.0f0
+              rolls[idx] = 0f0
           end
           
           input_data = [speed la 0.0 0.0]
@@ -1092,7 +1092,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       
       # Pre-fill lat_accels with constant values
       fill!(lat_accels, la)
-      fill!(rolls, 0.0f0)
+      fill!(rolls, 0f0)
       
       for (i, lj) in enumerate(lateral_jerk_range)
           input_data = [speed la lj 0.0]
@@ -1133,7 +1133,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           # Calculate lat_accels with lateral jerk
           @inbounds for (idx, t) in enumerate(t_list)
               lat_accels[idx] = la + lj * t
-              rolls[idx] = 0.0f0
+              rolls[idx] = 0f0
           end
           
           input_data = [speed la 0.0 0.0]
@@ -1216,7 +1216,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       y_model = Vector{Float32}(undef, length(roll_range))
       
       # Pre-fill lat_accels with zeros
-      fill!(lat_accels, 0.0f0)
+      fill!(lat_accels, 0f0)
       
       for (i, ro) in enumerate(roll_range)
           # Calculate rolls with roll rate
