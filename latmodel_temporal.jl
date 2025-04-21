@@ -35,6 +35,7 @@
 #     Pkg.add(package)
 # end
 
+# Import packages
 using CSV
 using DataFrames
 using StatsBase
@@ -90,7 +91,7 @@ Optimisers.init(o::CustomAdaGrad, x::AbstractArray) = fill!(similar(x, Float32),
 # Define constants
 const t_list = [-0.3f0 -0.2f0 -0.1f0 0.3f0 0.6f0 1.0f0 1.5f0]
 
-function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
+function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)::String
   full_path = joinpath(path, folder_name)
   i = 1
   if isdir(full_path) && !make_new
@@ -105,7 +106,7 @@ function create_folder_with_iterator(path::AbstractString, folder_name::Abstract
   return full_path
 end
 
-function describe(arr)
+function describe(arr)::String
   n = length(arr)
   μ = mean(arr)
   σ = std(arr)
@@ -142,10 +143,6 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
       end
     end
 
-    # Save the data to a feather file
-    # println(out_streams, "Saving data to feather file")
-    # Feather.write(joinpath(dirname(infile), replace(infile, ".csv" => ".feather")), data)
-
     println(out_streams, "Filtering out extreme values")
 
     min_vego = minimum(data[!, :v_ego])
@@ -167,11 +164,10 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     step_lateral_jerk = (mm_lateral_jerk[2] - mm_lateral_jerk[1]) / nbins
     step_roll = (mm_roll[2] - mm_roll[1]) / nbins
 
-    function filter_columns(df::DataFrame, partial_match::String, tol)
+    function filter_columns(df::DataFrame, partial_match::String, tol)::DataFrame
         for col_name in names(df)
             if occursin(partial_match, col_name)
                 # Apply your filter or transformation to the column here
-                # For example, filtering values greater than 1:
                 df = filter(row -> abs(row[col_name]) < tol, df)
             end
         end
@@ -217,11 +213,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
 
     # create a combined column for balancing
     data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins])
-    # binning on all four variables is too sparse
-    # data[!,:combined_column] = string.(data[!,:v_ego_bins], "_", data[!,:lateral_accel_bins], "_", data[!,:lateral_jerk_bins], "_", data[!,:roll_bins])
     
-    # data = data[sample(1:nrow(data), 50000), :] # for testing
-
     # balance the data in parallel
     bin_dfs = Vector{Vector{DataFrame}}(undef, Threads.nthreads())
     for i in 1:Threads.nthreads()
@@ -234,26 +226,14 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     for bin_label in unique_bins
         # println(out_streams, f"Balancing bin {i} of {length(unique_bins)}")
         bin_data = data[data[!, :combined_column] .== bin_label, :]
-        # m = Statistics.mean(bin_data[!, :steer_cmd])
-        # s = Statistics.std(bin_data[!, :steer_cmd])
-        # inliers = filter(row -> abs(row.steer_cmd - m) < 1.5*s, bin_data)
-        # if nrow(inliers) > 0
-        #   sampled_bin_data = inliers[sample(1:nrow(inliers), min(sample_size, nrow(inliers))), :]
-        #   push!(bin_dfs[Threads.threadid()], sampled_bin_data)
-        # else
-        #   sampled_bin_data = bin_data[sample(1:nrow(bin_data), min(sample_size, nrow(bin_data))), :]
-        #   push!(bin_dfs[Threads.threadid()], sampled_bin_data)
-        # end
-
-
         sampled_bin_data = bin_data[sample(1:nrow(bin_data), min(sample_size, nrow(bin_data))), :]
         push!(bin_dfs[Threads.threadid()], sampled_bin_data)
         
         next!(prog)
     end
+    
     flattened_sampled_bin_data = SplitApplyCombine.flatten(bin_dfs)
     data = vcat(flattened_sampled_bin_data...)
-    # data = balanced_data
 
     bin_sizes = [size(i,1) for i in flattened_sampled_bin_data]
     println(out_streams, f"Num points after initial balancing: {nrow(data)}")
@@ -276,7 +256,6 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
       end
     end
 
-    # CSV.write(joinpath(dirname(infile), replace(infile, ".csv" => "_balanced.csv")), data)
     Feather.write(joinpath(outdir, replace(infile, ".feather" => "_balanced.feather")), data)
   else
     println(out_streams, "Loading preprocessed data...")
@@ -285,40 +264,16 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
   return data
 end
 
-function train_model(working_dir::String, use_existing_model::Bool, data::DataFrame, out_streams)::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test, :test_loss), Tuple{Flux.Chain, Matrix{Float32}, Matrix{Float32}, Matrix{Float32}, Vector{Float32}, Matrix{Float32}, Vector{Float32}, Float32}}
+function train_model(working_dir::String, use_existing_model::Bool, data::DataFrame, out_streams, epoch_max_override::Int = typemax(Int))::NamedTuple{(:model, :input_mean, :input_std, :X_train, :y_train, :X_test, :y_test, :test_loss), Tuple{Flux.Chain, Matrix{Float32}, Matrix{Float32}, Matrix{Float32}, Vector{Float32}, Matrix{Float32}, Vector{Float32}, Float32}}
   model_path = joinpath(working_dir, Base.basename(working_dir))
-
-
-  # temp flip sign of roll
-  # data[!, :roll] = -data[!, :roll]
-  # old_nrows = nrow(data)
-  # data = filter(row -> (sign(row.roll) != sign(row.lateral_accel) || sign(row.roll) != sign(row.lateral_jerk) || sign(row.lateral_accel) != sign(row.lateral_jerk)) || (sign(row.steer_cmd) == sign(row.lateral_accel)), data)
-  # println(out_streams, f"Filtered out {old_nrows - nrow(data)} points with disagreeing signs")
-
-
-  # remove lateral jerk from data (temporary)
-  # select!(data, Not([:lateral_jerk]))
-  
-
-  # 10 random rows
-  # println(out_streams, data[sample(1:nrow(data), 10), :])
-
 
   # split into train and test sets
   train, test = stratifiedobs(row->row[:combined_column], data, p = 0.8)
 
-
   # remove columns used only for binning
-  select!(data, Not([:combined_column]))
-  select!(data, Not([:v_ego_bins]))
-  select!(data, Not([:lateral_accel_bins]))
-  select!(data, Not([:lateral_jerk_bins]))
-  select!(data, Not([:roll_bins]))
+  select!(data, Not([:combined_column, :v_ego_bins, :lateral_accel_bins, :lateral_jerk_bins, :roll_bins]))
 
-
-  # split into independent an dependent variables
-  X_data = Matrix(select(data, Not([:steer_cmd])))
-  # print 10 random rows
+  # split into independent and dependent variables
   println(out_streams, select(data, Not([:steer_cmd]))[sample(1:nrow(data), 10), :])
   X = Matrix(select(data, Not([:steer_cmd])))
   y = data[:, :steer_cmd];
@@ -357,17 +312,17 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     println(out_streams, "Using device: CPU")
   end
 
+  # normalize the data - use @views to avoid unnecessary copies and convert directly to Float32
   X_train = Matrix{Float32}(select(train, Not([:steer_cmd])))
-  # println(out_streams, "$(train[1, :])")
-  # println(out_streams, "as matrix: $(X_train[1, :])")
   X_train = (X_train .- input_mean) ./ input_std
   X_train = X_train |> device
-  # println(out_streams, "normalized $(X_train[1, :])")
+  
   y_train = Array{Float32}(train[:, "steer_cmd"]) |> device
-  # println(out_streams, "steer cmd: $(y_train[1])")
+  
   X_test = Matrix{Float32}(select(test, Not([:steer_cmd])))
   X_test = (X_test .- input_mean) ./ input_std
   X_test = X_test |> device
+  
   y_test = Array{Float32}(test[:, "steer_cmd"]) |> device
 
   input_dim = size(X_train, 2)
@@ -459,6 +414,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                               sum(abs2, max.(0.0f0, model_dg .- model_grid)) +
                               sum(abs2, max.(0.0f0, model_dgr .- model_grid))  
       end
+      
       if λ_odd ≉ 0.0f0
           model_odd_neg = model(grid_odd_neg)
           odd_loss = sum(abs2, model_grid .+ model_odd_neg)
@@ -468,19 +424,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           origin_loss = sum(abs2, model(grid_origin))
       end
 
-      # Apply the d_odd_eye transformation to x
-      # transformed_x = (x' * d_odd_eye)'
-
-      # # Compute the model output for transformed_x
-      # transformed_y_pred = model(transformed_x)
-
-      # odd_loss += sum(abs.(y_pred .+ transformed_y_pred))
-
-      # Total loss with penalty weights λ_monotonic and λ_odd
-      # λ_monotonic = 0.0002
-      # λ_odd = 0.00002
-
-      # return λ_odd * odd_loss
       return λ_monotonic * monotonicity_loss + λ_odd * odd_loss + λ_origin * origin_loss
   end
 
@@ -664,8 +607,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
             loss_last = loss_cur
             Δloss_last = Δloss
             if abs(Δloss) > tol || abs(Δloss_last) > Δtol
-                c1 = abs(Δloss) > tol ? ">" : "≤"
-                c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
                 cur_time = Dates.format(now(), "HH:MM:SS")
                 # predict time remaining
                 time_str = "estimating remaining time..."
@@ -690,8 +631,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         epoch += 1
         ilog += 1
     end
-    c1 = abs(Δloss) > tol ? ">" : "≤"
-    c2 = abs(ΔΔloss) > Δtol ? ">" : "≤"
     cur_time = Dates.format(now(), "HH:MM:SS")
     println(out_streams, f"round 1 {cur_time} Epoch: {epoch:3d} (of {epoch_max}; Loss: {loss_cur:.6f}, ΔLoss: {Δloss:.7f}, ΔΔLoss: {ΔΔloss:.9f}")
 
@@ -1317,22 +1256,15 @@ function create_model(in_file, out_dir_base)
 end
 
 function main(in_dir)
-  for in_file in readdir(in_dir)
-    if occursin(".feather", in_file) && !occursin("_balanced.feather", in_file)
+  # Get all feather files that aren't balanced files
+  feather_files = filter(file -> occursin(".feather", file) && !occursin("_balanced.feather", file), readdir(in_dir))
+  
+  # Process each file
+  for in_file in feather_files
       println("Processing $in_file")
       create_model(joinpath(in_dir, in_file), in_dir)
-      # return
-    end
   end
 end
-
-# parser = ArgParse.ArgParser("Train a model from a feather file of [vego, lat_accel, lat_jerk, roll, steer_torque] that will predict steer_torque from [vego, lat_accel, lat_jerk, roll]") 
-
-# add_argument(parser, "--input-dir", help="Input directory full of feather files", required=true)
-
-# args = parse_args(parser)
-
-# main(args["input-dir"])
 
 # Use the current user's home directory instead of hardcoding
 home_dir = ENV["HOME"]
