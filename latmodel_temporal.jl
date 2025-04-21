@@ -121,21 +121,16 @@ end
 function load_data(infile::String, use_existing_data::Bool, outdir::String, out_streams)::DataFrame
   # Load the data into a DataFrame
   if use_existing_data
-    # infile = replace(infile, ".csv" => "_balanced.csv")
     infile = replace(infile, ".feather" => "_balanced.feather")
 
     println(out_streams, "Using existing data")
   end
-  # data = CSV.read(infile, DataFrame)
   data = Feather.read(infile)
   if !use_existing_data
     println(out_streams, "Loading data...")
     # Remove rows with missing data
     data = data[completecases(data), :]
-
     println(out_streams, f"Loaded {nrow(data)} rows")
-
-    # println(out_streams, f"Loaded data: {names(data)}")
     println(out_streams, f"Data {data[sample(1:nrow(data), 20), :]}")
     for col in names(data)
       if typeof(data[1, col]) == Float64
@@ -144,7 +139,6 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     end
 
     println(out_streams, "Filtering out extreme values")
-
     min_vego = minimum(data[!, :v_ego])
 
     # setup bin ranges
@@ -527,14 +521,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   println(out_streams, size(X_train))
   println(out_streams, size(y_train))
 
-  # old_model = "$model_path.bson" #"/Users/haiiro/NoSync/voltlat.bson"
-  # println(out_streams, "Loading old model, $old_model")
-  # @load old_model model
-
-  # model = device(model)
-
   if use_existing_model
-      old_model = "$model_path.bson" #"/Users/haiiro/NoSync/voltlat.bson"
+      old_model = "$model_path.bson"
       println(out_streams, "Loading old model, $old_model")
       @load old_model model
   else
@@ -680,7 +668,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       grid_origin = cpu(grid_origin)
     end
 
-    @save "$model_path.bson" model # "/Users/haiiro/NoSync/voltlat.bson" model
+    @save "$model_path.bson" model
 
     # Create and save plot of training
 
@@ -737,7 +725,6 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       if zero_bias
         b = zeros(Float32, size(b))
       end
-      # println(out_streams, "$(size(W)), $(size(b)), $(layer.σ), $(size(x))")
       if layer.σ == σ
         x = σ.(x * W .+ b)
       elseif layer.σ == identity
@@ -1281,9 +1268,6 @@ function multiline_string(strings::Vector{String}, n::Int; prefix="")::String
   # Join the lines with newline characters
   return join(lines, ",\n")
 end
-
-
-
 
 function create_model(in_file, out_dir_base)
   carname = replace(Base.basename(in_file), ".feather" => "")
