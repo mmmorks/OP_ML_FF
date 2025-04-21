@@ -545,11 +545,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       end
     end
 
-    #if size(y_train, 1) > batch_size
-    #  X_train = cpu(X_train)
-    #  y_train = cpu(y_train)
-    #end
-    train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)# |> device
+    if size(y_train, 1) > batch_size
+      X_train = cpu(X_train)
+      y_train = cpu(y_train)
+    end
+    train_data_loader = DataLoader((X_train', y_train), batchsize=batch_size, shuffle=true)
 
     grid = grid |> device
     grid_da = grid_da |> device
