@@ -43,7 +43,6 @@ using Flux
 using Flux: params, train!, mse
 using Flux.Optimisers
 using MLUtils: DataLoader
-using DataFrames
 using MLDataUtils #: splitobs, rescale
 using Statistics #: mean, std
 using LinearAlgebra #: diag
@@ -88,7 +87,8 @@ end
 
 Optimisers.init(o::CustomAdaGrad, x::AbstractArray) = fill!(similar(x, Float32), 0.0f0)
 
-t_list = [-0.3 -0.2 -0.1 0.3 0.6 1.0 1.5]
+# Define constants
+const t_list = [-0.3f0 -0.2f0 -0.1f0 0.3f0 0.6f0 1.0f0 1.5f0]
 
 function create_folder_with_iterator(path::AbstractString, folder_name::AbstractString; make_new=true)
   full_path = joinpath(path, folder_name)
@@ -111,7 +111,7 @@ function describe(arr)
   σ = std(arr)
   minimum_value = minimum(arr)
   maximum_value = maximum(arr)
-  quartiles = quantile(arr, [0.25, 0.5, 0.75])
+  quartiles = quantile(arr, [0.25f0, 0.5f0, 0.75f0])
   
   return f"n: {n}, mean: {μ:0.6f}, std: {σ:0.6f}, min: {minimum_value:0.6f}, max: {maximum_value:0.6f}, 25%: {quartiles[1]:0.6f}, 50%: {quartiles[2]:0.6f}, 75%: {quartiles[3]:0.6f}"
 
@@ -332,14 +332,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   println(out_streams, "Training data before copying symmmetric data: $old_size")
   data_sym = deepcopy(train)
   # symmetrize data by flipping the sign of all columns except v_ego and a_ego in one line
-  data_sym[!, Not([:v_ego])] = -1 .* data_sym[!, Not([:v_ego])]
+  data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
   train = vcat(train, data_sym)
   println(out_streams, "Training data after copying symmmetric data: $(size(train,1))")
 
   old_size = size(test, 1)
   println(out_streams, "Test data before copying symmmetric data: $old_size")
   data_sym = deepcopy(test)
-  data_sym[!, Not([:v_ego])] = -1 .* data_sym[!, Not([:v_ego])]
+  data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
   test = vcat(test, data_sym)
   println(out_streams, "Test data after copying symmmetric data: $(size(test,1))")
 
@@ -357,21 +357,18 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     println(out_streams, "Using device: CPU")
   end
 
-  # normalize the data
-  X_train = Matrix(select(train, Not([:steer_cmd])))
+  X_train = Matrix{Float32}(select(train, Not([:steer_cmd])))
   # println(out_streams, "$(train[1, :])")
   # println(out_streams, "as matrix: $(X_train[1, :])")
   X_train = (X_train .- input_mean) ./ input_std
-  X_train = Array{Float32}(X_train) |> device
+  X_train = X_train |> device
   # println(out_streams, "normalized $(X_train[1, :])")
-  y_train = train[:, "steer_cmd"]
-  y_train = Array{Float32}(y_train) |> device
+  y_train = Array{Float32}(train[:, "steer_cmd"]) |> device
   # println(out_streams, "steer cmd: $(y_train[1])")
-  X_test = Matrix(select(test, Not([:steer_cmd])))
+  X_test = Matrix{Float32}(select(test, Not([:steer_cmd])))
   X_test = (X_test .- input_mean) ./ input_std
-  X_test = Array{Float32}(X_test) #|> device
-  y_test = test[:, "steer_cmd"]
-  y_test = Array{Float32}(y_test) #|> device
+  X_test = X_test |> device
+  y_test = Array{Float32}(test[:, "steer_cmd"]) |> device
 
   input_dim = size(X_train, 2)
 
@@ -388,19 +385,18 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   # Define the range of values for each independent variable
   speed_len = 8
   other_len = 9
-  v_ego_range = range(1, stop=40, length=speed_len)
-  lateral_acceleration_range = range(-4, stop=4, length=other_len)
-  lateral_acceleration_range_hi = range(-3.95, stop=4.05, length=other_len)
-  lateral_jerk_range = range(-5, stop=5, length=other_len)
-  lateral_jerk_range_hi = range(-4.87, stop=5.13, length=other_len)
-  lateral_error_range = range(-5, stop=5, length=other_len)
-  lateral_error_range_hi = range(-4.87, stop=5.13, length=other_len)
-  roll_range = range(-0.2, stop=0.2, length=other_len)
-  roll_range_hi = range(-0.17, stop=0.23, length=other_len)
-  roll_rate_range = range(-0.4, stop=0.4, length=other_len)
-  roll_rate_range_hi = range(-0.35, stop=0.45, length=other_len)
+  v_ego_range = range(1f0, stop=40f0, length=speed_len)
+  lateral_acceleration_range = range(-4f0, stop=4f0, length=other_len)
+  lateral_acceleration_range_hi = range(-3.95f0, stop=4.05f0, length=other_len)
+  lateral_jerk_range = range(-5f0, stop=5f0, length=other_len)
+  lateral_jerk_range_hi = range(-4.87f0, stop=5.13f0, length=other_len)
+  lateral_error_range = range(-5f0, stop=5f0, length=other_len)
+  lateral_error_range_hi = range(-4.87f0, stop=5.13f0, length=other_len)
+  roll_range = range(-0.2f0, stop=0.2f0, length=other_len)
+  roll_range_hi = range(-0.17f0, stop=0.23f0, length=other_len)
+  roll_rate_range = range(-0.4f0, stop=0.4f0, length=other_len)
+  roll_rate_range_hi = range(-0.35f0, stop=0.45f0, length=other_len)
 
-  num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1)
   function prepare_test_grid(lat_jerk_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
     num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1) * size(lateral_error_range, 1) * size(roll_rate_range, 1)
     out_grid = Matrix{Float32}(undef, 4 + 2 * size(t_list,2), num_test_samples)
@@ -437,15 +433,17 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   varnames = join(names(select(data, Not([:steer_cmd]))), ", ")
 
-  function physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-      if λ_monotonic ≈ 0.0f0 && λ_odd ≈ 0.0f0
+  function physical_constraint_losses(x, y_pred, λ_monotonic::Float32, λ_odd::Float32, λ_origin::Float32) :: Float32
+      if λ_monotonic ≈ 0.0f0 && λ_odd ≈ 0.0f0 && λ_origin ≈ 0.0f0
           return 0.0f0
       end
+      
       monotonicity_loss = 0.0f0
       odd_loss = 0.0f0
       origin_loss = 0.0f0
 
       model_grid = model(grid)
+      
       if λ_monotonic ≉ 0.0f0
           model_da = model(grid_da)
           model_dj = model(grid_dj)
@@ -455,11 +453,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
           # d(output)/d(lat accel/jerk) and d(output)/d(error) should be positive,
           # d(output)/d(roll) and d(output)/d(roll_rate) should be negative
-          monotonicity_loss = sum(abs2, max.(0, (model_da .- model_grid) .* -1)) +
-                              sum(abs2, max.(0, (model_dj .- model_grid) .* -1)) +
-                              sum(abs2, max.(0, (model_de .- model_grid) .* -1)) +
-                              sum(abs2, max.(0, model_dg .- model_grid)) +
-                              sum(abs2, max.(0, model_dgr .- model_grid))  
+          @fastmath monotonicity_loss = sum(abs2, max.(0.0f0, (model_da .- model_grid) .* -1.0f0)) +
+                              sum(abs2, max.(0.0f0, (model_dj .- model_grid) .* -1.0f0)) +
+                              sum(abs2, max.(0.0f0, (model_de .- model_grid) .* -1.0f0)) +
+                              sum(abs2, max.(0.0f0, model_dg .- model_grid)) +
+                              sum(abs2, max.(0.0f0, model_dgr .- model_grid))  
       end
       if λ_odd ≉ 0.0f0
           model_odd_neg = model(grid_odd_neg)
@@ -507,7 +505,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       return sum(weighted_squared_errors) / length(y_true)
   end
 
-  function combined_loss(x, y_true, y_pred, model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
+  function combined_loss(x, y_true, y_pred, model, λ::Float32, λ_monotonic::Float32, λ_odd::Float32, λ_origin::Float32, low::Float32, high::Float32)
       mse = 0.0f0
       if low ≉ high
         scaling_vector = get_scaling_vector(x, low, high)
@@ -520,7 +518,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       return mse + l2 + physical_constraints
   end
 
-  loss(x, y, model, λ=0.0f0, λ_monotonic=0.0f0, λ_odd=0.0f0, λ_origin=0.0f0, low=1.0f0, high=1.0f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
+  loss(x, y, model, λ::Float32=0.0f0, λ_monotonic::Float32=0.0f0, λ_odd::Float32=0.0f0, λ_origin::Float32=0.0f0, low::Float32=1.0f0, high::Float32=1.0f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
 
   # pick an optimizer
   # opt = Flux.ADAM(0.001)
@@ -596,8 +594,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     start_time = now()
     last_log_time = start_time - Dates.Millisecond(40000)
     ptime(t) = Dates.format(t, "HH:MM:SS")
-    losses = []
-    lambdas = []
+    losses = Float32[]
+    lambdas = NTuple{4, Float32}[]
     ilog = 0
     epoch_last = 1
 
@@ -655,10 +653,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         if (t - last_log_time) > Dates.Millisecond(10000) || epoch >= epoch_max
             loss_cur = l
             Δloss = loss_cur - loss_last
-            if Δloss > -eps(Float32)
+            if (Δloss > 0) || (Δloss ≈ 0)
                 stall_count += 1
             end
-            if stall_count ≥ stall_check_count && Δloss < eps(Float32)
+            if stall_count ≥ stall_check_count && ((Δloss < 0) || (Δloss ≈ 0f0))
                 println(out_streams, "Stalled at epoch $epoch, loss $loss_cur")
                 break
             end
@@ -753,7 +751,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       eval_model = deepcopy(model)
       for layer in eval_model.layers
         if layer isa Dense
-          Flux.params(layer)[2] .= zeros(size(Flux.params(layer)[2]))
+          Flux.params(layer)[2] .= zeros(Float32, size(Flux.params(layer)[2]))
         end
       end
       steer_command = eval_model(input_data_scaled')
@@ -770,7 +768,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       W = W'
       b = b'
       if zero_bias
-        b = zeros(size(b))
+        b = zeros(Float32, size(b))
       end
       # println(out_streams, "$(size(W)), $(size(b)), $(layer.σ), $(size(x))")
       if layer.σ == σ
@@ -801,10 +799,10 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   function test_evaluate_manually(model; zero_bias=false)
-    vego_range = 0:20:40
-    lataccel_range = -4:4:4
-    latjerk_range = -4:4:4
-    roll_range = -0.2:0.2:0.2
+    vego_range = 0f0:20f0:40f0
+    lataccel_range = -4f0:4f0:4f0
+    latjerk_range = -4f0:4f0:4f0
+    roll_range = -0.2f0:0.2f0:0.2f0
     println(out_streams, "Testing manual model evaluation (as performed in OpenPilot)...")
     println(out_streams, "Testing with zero bias: $zero_bias")
     test_dict = Dict()
@@ -852,8 +850,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
           if isa(layer, Dense)
               W, b = params(layer)
               params_dict["layers"] = push!(params_dict["layers"], Dict(
-                  "dense_$(idx)_W" => Array(W'),
-                  "dense_$(idx)_b" => Array(b'),
+                  "dense_$(idx)_W" => Array{Float32}(W'),
+                  "dense_$(idx)_b" => Array{Float32}(b'),
                   "activation" => string(layer.σ)
               ))
           end
