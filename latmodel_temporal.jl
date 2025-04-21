@@ -276,8 +276,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   # split into independent and dependent variables
   println(out_streams, select(data, Not([:steer_cmd]))[sample(1:nrow(data), 10), :])
-  X = Matrix(select(data, Not([:steer_cmd])))
-  y = data[:, :steer_cmd];
+  X = Float32.(Matrix(select(data, Not([:steer_cmd]))))
+  y = Float32.(data[:, :steer_cmd];)
 
   # Calculate the mean and standard deviation of the input features
   input_mean = mean(X, dims=1)
