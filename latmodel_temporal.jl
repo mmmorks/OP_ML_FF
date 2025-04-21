@@ -81,8 +81,8 @@ end
 function Optimisers.apply!(o::CustomAdaGrad, state, x, Δ)
   η, ϵ = o.eta, o.epsilon
   acc = state
-  @. acc += Δ^2
-  @. Δ *= η / (√acc + ϵ)
+  @inbounds @fastmath @. acc += Δ^2
+  @inbounds @fastmath @. Δ *= η / (√acc + ϵ)
   return acc
 end
 
@@ -177,7 +177,7 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     # if lateral_jerk is always zero, replace with approximation from lateral accel
     if all(data[!, :lateral_jerk] .≈ 0.0f0)
         println(out_streams, "Replacing lateral_jerk with approximation from lateral_accel")
-        data[!, :lateral_jerk] = (data[!, :lateral_accel_p03] .- data[!, :lateral_accel]) ./ 0.03f0
+        data[!, :lateral_jerk] = @fastmath @. (data[!, :lateral_accel_p03] - data[!, :lateral_accel]) / 0.03f0
     end
 
     # filter data
@@ -223,8 +223,9 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     unique_bins = unique(data[!, :combined_column])
     prog = ProgressMeter.Progress(length(unique_bins), 1, "Balancing bins:")
     println(out_streams, f"Balancing data into {length(unique_bins)} bins")
-    for bin_label in unique_bins
-        # println(out_streams, f"Balancing bin {i} of {length(unique_bins)}")
+    
+    # Use threads for better performance
+    Threads.@threads for bin_label in unique_bins
         bin_data = data[data[!, :combined_column] .== bin_label, :]
         sampled_bin_data = bin_data[sample(1:nrow(bin_data), min(sample_size, nrow(bin_data))), :]
         push!(bin_dfs[Threads.threadid()], sampled_bin_data)
@@ -243,11 +244,17 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
     bin_std_size = std(bin_sizes)
     println(out_streams, f"Bin sizes: min={bin_min_size}, max={bin_max_size}, mean={bin_mean_size}, std={bin_std_size}")
 
-
     new_bin_size = Int(round(max((bin_min_size + bin_mean_size)/2, mean(bin_sizes) - bin_std_size/2), digits=0))
     println(out_streams, f"Shrinking bins to {new_bin_size} points")
-    flattened_sampled_bin_data = [i[sample(1:size(i,1), new_bin_size), :] for i in flattened_sampled_bin_data]
-    data = vcat(flattened_sampled_bin_data...)
+    
+    # Pre-allocate for better performance
+    resized_bin_data = Vector{DataFrame}(undef, length(flattened_sampled_bin_data))
+    
+    Threads.@threads for i in 1:length(flattened_sampled_bin_data)
+        resized_bin_data[i] = flattened_sampled_bin_data[i][sample(1:size(flattened_sampled_bin_data[i],1), new_bin_size), :]
+    end
+    
+    data = vcat(resized_bin_data...)
     println(out_streams, f"Num points after final balancing: {nrow(data)}")
 
     for col in names(data)
@@ -287,14 +294,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   println(out_streams, "Training data before copying symmmetric data: $old_size")
   data_sym = deepcopy(train)
   # symmetrize data by flipping the sign of all columns except v_ego and a_ego in one line
-  data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
+  @views data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
   train = vcat(train, data_sym)
   println(out_streams, "Training data after copying symmmetric data: $(size(train,1))")
 
   old_size = size(test, 1)
   println(out_streams, "Test data before copying symmmetric data: $old_size")
   data_sym = deepcopy(test)
-  data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
+  @views data_sym[!, Not([:v_ego])] = -1f0 .* data_sym[!, Not([:v_ego])]
   test = vcat(test, data_sym)
   println(out_streams, "Test data after copying symmmetric data: $(size(test,1))")
 
@@ -314,13 +321,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
 
   # normalize the data - use @views to avoid unnecessary copies and convert directly to Float32
   X_train = Matrix{Float32}(select(train, Not([:steer_cmd])))
-  X_train = (X_train .- input_mean) ./ input_std
+  @fastmath @. X_train = (X_train - input_mean) / input_std
   X_train = X_train |> device
   
   y_train = Array{Float32}(train[:, "steer_cmd"]) |> device
   
   X_test = Matrix{Float32}(select(test, Not([:steer_cmd])))
-  X_test = (X_test .- input_mean) ./ input_std
+  @fastmath @. X_test = (X_test - input_mean) / input_std
   X_test = X_test |> device
   
   y_test = Array{Float32}(test[:, "steer_cmd"]) |> device
@@ -356,16 +363,40 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
     num_test_samples = size(v_ego_range, 1) * size(lateral_acceleration_range, 1) * size(lateral_jerk_range, 1) * size(roll_range, 1) * size(lateral_error_range, 1) * size(roll_rate_range, 1)
     out_grid = Matrix{Float32}(undef, 4 + 2 * size(t_list,2), num_test_samples)
     i = 1
+    
+    # Pre-allocate arrays for better performance
+    lat_accels = Vector{Float32}(undef, length(t_list))
+    rolls = Vector{Float32}(undef, length(t_list))
+    grid_tmp = Vector{Float32}(undef, 4 + 2 * length(t_list))
+    
     for la in lateral_acceleration_range
       for lj in lateral_jerk_range
         for le in lateral_error_range
           for roll in roll_range
             for roll_rate in roll_rate_range
               for v_ego in v_ego_range
-                lat_accels = [lat_jerk_func(la, lj, t) for t in t_list]
-                rolls = [roll + roll_rate * t for t in t_list]
-                grid_tmp = vcat([v_ego; la; le + lj; roll], lat_accels', rolls')
-                out_grid[:, i] = ((grid_tmp' .- input_mean) ./ input_std)'
+                # Use in-place operations to avoid allocations
+                @inbounds for (idx, t) in enumerate(t_list)
+                  lat_accels[idx] = lat_jerk_func(la, lj, t)
+                  rolls[idx] = roll + roll_rate * t
+                end
+                
+                # Construct grid_tmp without intermediate allocations
+                grid_tmp[1] = v_ego
+                grid_tmp[2] = la
+                grid_tmp[3] = le + lj
+                grid_tmp[4] = roll
+                
+                @inbounds for idx in 1:length(t_list)
+                  grid_tmp[4 + idx] = lat_accels[idx]
+                  grid_tmp[4 + length(t_list) + idx] = rolls[idx]
+                end
+                
+                # Normalize and store in out_grid
+                @inbounds @fastmath for j in 1:length(grid_tmp)
+                  out_grid[j, i] = (grid_tmp[j] - input_mean[j]) / input_std[j]
+                end
+                
                 i += 1
               end
             end
@@ -373,10 +404,13 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         end
       end
     end
-    out_grid
+    return out_grid
   end
 
-  lj_func =  (la,lj,t) -> la + lj * t
+  # Define the linear jerk function for better performance - use oftype for type stability
+  lj_func = (la, lj, t) -> la + oftype(la, lj * t)
+  
+  # Prepare all the grids
   grid = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
   grid_da = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range_hi, lateral_jerk_range, roll_range, lateral_error_range, roll_rate_range)
   grid_dj = prepare_test_grid(lj_func, v_ego_range, lateral_acceleration_range, lateral_jerk_range_hi, roll_range, lateral_error_range, roll_rate_range)
@@ -417,14 +451,14 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       
       if λ_odd ≉ 0.0f0
           model_odd_neg = model(grid_odd_neg)
-          odd_loss = sum(abs2, model_grid .+ model_odd_neg)
+          @fastmath odd_loss = sum(abs2, model_grid .+ model_odd_neg)
       end
 
       if λ_origin ≉ 0.0f0
-          origin_loss = sum(abs2, model(grid_origin))
+          @fastmath origin_loss = sum(abs2, model(grid_origin))
       end
 
-      return λ_monotonic * monotonicity_loss + λ_odd * odd_loss + λ_origin * origin_loss
+      @fastmath return λ_monotonic * monotonicity_loss + λ_odd * odd_loss + λ_origin * origin_loss
   end
 
   function model_with_params(model, params)
@@ -434,18 +468,18 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
   end
 
   function get_scaling_vector(x, low, high)
-      speed = x[:, 1]
+      speed = @view x[:, 1]
       min_speed, max_speed = extrema(speed)
-      normalized_speed = (speed .- min_speed) ./ (max_speed - min_speed) # normalize to [0, 1]
-      scaling_vector = low .+ (high .- low) .* normalized_speed # scale to [low, high]
+      @fastmath normalized_speed = @. (speed - min_speed) / (max_speed - min_speed) # normalize to [0, 1]
+      @fastmath scaling_vector = @. low + (high - low) * normalized_speed # scale to [low, high]
       return scaling_vector
   end
 
   function custom_mse(y_true, y_pred, scaling_vector)
-      residuals = y_true - y_pred
-      squared_errors = residuals .* residuals
-      weighted_squared_errors = scaling_vector .* squared_errors
-      return sum(weighted_squared_errors) / length(y_true)
+      @fastmath residuals = y_true .- y_pred
+      @fastmath squared_errors = residuals .* residuals
+      @fastmath weighted_squared_errors = scaling_vector .* squared_errors
+      return sum(weighted_squared_errors) / oftype(weighted_squared_errors[1], length(y_true))
   end
 
   function combined_loss(x, y_true, y_pred, model, λ::Float32, λ_monotonic::Float32, λ_odd::Float32, λ_origin::Float32, low::Float32, high::Float32)
@@ -456,9 +490,11 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
       else
         mse = Flux.Losses.mse(y_true, y_pred)
       end
+      
       l2 = λ ≈ 0.0f0 ? 0.0f0 : λ * sum(p -> sum(abs2, p), params(model))
       physical_constraints = physical_constraint_losses(x, y_pred, λ_monotonic, λ_odd, λ_origin)
-      return mse + l2 + physical_constraints
+      
+      @fastmath return mse + l2 + physical_constraints
   end
 
   loss(x, y, model, λ::Float32=0.0f0, λ_monotonic::Float32=0.0f0, λ_odd::Float32=0.0f0, λ_origin::Float32=0.0f0, low::Float32=1.0f0, high::Float32=1.0f0) = combined_loss(x, y', model(x), model, λ, λ_monotonic, λ_odd, λ_origin, low, high)
@@ -818,7 +854,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   function feedforward_function(input_data)
     # Scale the input data using the stored mean and standard deviation values
-    input_data_scaled = (input_data .- input_mean) ./ input_std
+    @fastmath input_data_scaled = @. (input_data - input_mean) / input_std
     steer_command = model(input_data_scaled')
     return steer_command[1]
   end
@@ -828,14 +864,14 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # Create a function to filter the dataset based on speed
   function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false, shuffle_data=true)
-    indices = findall(abs.(Xi[:, 1] .- speed) .< tolerance)
+    indices = findall(@. abs(Xi[:, 1] - speed) < tolerance)
     X, y = Xi[indices, :], yi[indices]
     if no_jerk
-      indices = findall(abs.(X[:, 3]) .< max_abs_lat_jerk)
+      indices = findall(@. abs(X[:, 3]) < max_abs_lat_jerk)
       X, y = X[indices, :], y[indices]
     end
     if no_roll
-      indices = findall(abs.(X[:, 4]) .< max_abs_roll)
+      indices = findall(@. abs(X[:, 4]) < max_abs_roll)
       X, y = X[indices, :], y[indices]
     end
     if shuffle_data
@@ -845,8 +881,8 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     return X, y
   end
 
-  X_train_rescaled = X_train .* input_std .+ input_mean
-  X_test_rescaled = X_test .* input_std .+ input_mean
+  @fastmath X_train_rescaled = @. X_train * input_std + input_mean
+  @fastmath X_test_rescaled = @. X_test * input_std + input_mean
 
   scatter_points_desired = 1000
 
@@ -866,15 +902,12 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   plot_col_num = 1
   p = plot(layout = (size(collect(speed_range), 1), 3), legend=:bottomright, size=(2300, 2300), margin=8mm)
 
-  # Now looking at how the model output changes when the temporal values indicate
-  # increasing or decreasing lateral accel
-  
+  # Pre-allocate arrays for better performance
+  lat_accels = Vector{Float32}(undef, length(t_list))
+  rolls = Vector{Float32}(undef, length(t_list))
 
   # Iterate over the speed range and create a plot for each speed
-
-
   for (si, speed) in enumerate(speed_range)
-
     # Plot the training data
     X_train_filtered, y_train_filtered = filter_data_by_speed(X_train_rescaled, y_train, speed, speed_step/2, no_roll=true)
     plot_scatter_step = round(Int, max(1, size(X_train_filtered, 1) / scatter_points_desired / 2))
@@ -889,25 +922,29 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     hline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
     hline!(p[si,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
     
-
-
     # Plot "sustained error", so that the amount of lat accel error propogates backwards and forwards through time
     # (i.e. you're entering/exiting a turn at a constant rate that the car isn't keeping up with).
     # Here, we set a lateral jerk value and use that to compute the lateral acceleration at each time step.
     ci = 1
     for lj in [-1.0, -0.25, 0.0, 0.25, 1.0]
-      x_model = []
-      y_model = []
-      for la in lateral_acceleration_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la for t in t_list]
-          rolls = [0.0 for t in t_list]
+      x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      
+      for (i, la) in enumerate(lateral_acceleration_range)
+          # Fill pre-allocated arrays
+          fill!(lat_accels, la)
+          fill!(rolls, 0.0f0)
+          
+          # Create input data
           input_data = [speed la lj 0.0]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
+          
+          # Get model prediction
           steer_command = feedforward_function(input_data)
-          push!(x_model, la)
-          push!(y_model, steer_command)
+          x_model[i] = la
+          y_model[i] = steer_command
       end
+      
       plot!(p[si,plot_col_num], x_model, y_model, label="err = $lj", linewidth=line_width, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -940,23 +977,27 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     hline!(p[si,plot_col_num], [0.0], color=:black, linewidth=1, label="")
     hline!(p[si,plot_col_num], [-1, 1], color=:red, linewidth=1, label="")
     
-
-
     # Plot "sustained error", so that the amount of lat accel error propogates backwards and forwards through time
     ci = 1
     for lj in -1.0:0.5:1.0
-      x_model = []
-      y_model = []
-      for la in lateral_acceleration_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la + lj * t for t in t_list]
-          rolls = [0.0 for t in t_list]
+      x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      
+      for (i, la) in enumerate(lateral_acceleration_range)
+          # Calculate lat_accels with lateral jerk
+          @inbounds for (idx, t) in enumerate(t_list)
+              lat_accels[idx] = la + lj * t
+              rolls[idx] = 0.0f0
+          end
+          
           input_data = [speed la 0.0 0.0]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, la)
-          push!(y_model, steer_command)
+          
+          x_model[i] = la
+          y_model[i] = steer_command
       end
+      
       plot!(p[si,plot_col_num], x_model, y_model, label="lat. jerk = $lj", linewidth=line_width, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -996,18 +1037,21 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # Plot the model output
     ci = 1
     for gla in -0.1:0.05:0.1
-      x_model = []
-      y_model = []
-      for la in lateral_acceleration_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la for t in t_list]
-          rolls = [gla for t in t_list]
+      x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
+      
+      for (i, la) in enumerate(lateral_acceleration_range)
+          fill!(lat_accels, la)
+          fill!(rolls, gla)
+          
           input_data = [speed la 0.0 gla]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, la)
-          push!(y_model, steer_command)
+          
+          x_model[i] = la
+          y_model[i] = steer_command
       end
+      
       plot!(p[si,plot_col_num], x_model, y_model, label="roll = $gla", linewidth=line_width, xlims=(-3.5, 3.5), ylims=(-1.4,1.4), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -1051,18 +1095,21 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # Plot the model output
     ci = 1
     for la in lateral_accel_range
-      x_model = []
-      y_model = []
-      for lj in lateral_jerk_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la for t in t_list]
-          rolls = [0.0 for t in t_list]
+      x_model = Vector{Float32}(undef, length(lateral_jerk_range))
+      y_model = Vector{Float32}(undef, length(lateral_jerk_range))
+      
+      # Pre-fill lat_accels with constant values
+      fill!(lat_accels, la)
+      fill!(rolls, 0.0f0)
+      
+      for (i, lj) in enumerate(lateral_jerk_range)
           input_data = [speed la lj 0.0]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, lj)
-          push!(y_model, steer_command)
+          x_model[i] = lj
+          y_model[i] = steer_command
       end
+      
       plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-3.0, 3.0), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -1087,18 +1134,24 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # Plot the model output
     ci = 1
     for la in lateral_accel_range
-      x_model = []
-      y_model = []
-      for lj in lateral_jerk_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la + t * lj for t in t_list]
-          rolls = [0.0 for t in t_list]
+      x_model = Vector{Float32}(undef, length(lateral_jerk_range))
+      y_model = Vector{Float32}(undef, length(lateral_jerk_range))
+      
+      for (i, lj) in enumerate(lateral_jerk_range)
+          # Calculate lat_accels with lateral jerk
+          @inbounds for (idx, t) in enumerate(t_list)
+              lat_accels[idx] = la + lj * t
+              rolls[idx] = 0.0f0
+          end
+          
           input_data = [speed la 0.0 0.0]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, lj)
-          push!(y_model, steer_command)
+          
+          x_model[i] = lj
+          y_model[i] = steer_command
       end
+      
       plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-3.0, 3.0), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -1123,18 +1176,24 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # Plot the model output
     ci = 1
     for la in lateral_accel_range
-      x_model = []
-      y_model = []
-      for ro in roll_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [la for t in t_list]
-          rolls = [ro for t in t_list]
+      x_model = Vector{Float32}(undef, length(roll_range))
+      y_model = Vector{Float32}(undef, length(roll_range))
+      
+      # Pre-fill lat_accels with constant values
+      fill!(lat_accels, la)
+      
+      for (i, ro) in enumerate(roll_range)
+          # Fill rolls with constant value
+          fill!(rolls, ro)
+          
           input_data = [speed la 0.0 ro]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, ro)
-          push!(y_model, steer_command)
+          
+          x_model[i] = ro
+          y_model[i] = steer_command
       end
+      
       plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="lat accel = $la", linewidth=line_width, xlims=(-0.2, 0.2), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -1161,18 +1220,26 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # Plot the model output
     ci = 1
     for rr in roll_rate_range
-      x_model = []
-      y_model = []
-      for ro in roll_range
-          # (v_ego	lateral_accel	lateral_jerk g_lat_accel)
-          lat_accels = [0.0 for t in t_list]
-          rolls = [ro + t * rr for t in t_list]
+      x_model = Vector{Float32}(undef, length(roll_range))
+      y_model = Vector{Float32}(undef, length(roll_range))
+      
+      # Pre-fill lat_accels with zeros
+      fill!(lat_accels, 0.0f0)
+      
+      for (i, ro) in enumerate(roll_range)
+          # Calculate rolls with roll rate
+          @inbounds for (idx, t) in enumerate(t_list)
+              rolls[idx] = ro + t * rr
+          end
+          
           input_data = [speed 0.0 0.0 ro]
-          input_data = hcat(input_data, lat_accels, rolls)
+          input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
-          push!(x_model, ro)
-          push!(y_model, steer_command)
+          
+          x_model[i] = ro
+          y_model[i] = steer_command
       end
+      
       plot!(p[plot_row_num,plot_col_num], x_model, y_model, label="roll rate = $rr", linewidth=line_width, xlims=(-0.2, 0.2), ylims=(-1.5,1.5), color=palette(cpalette,5)[ci])
       ci += 1
     end
@@ -1185,42 +1252,42 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     end
     xlabel!(p[plot_row_num,plot_col_num], "Road roll (radians; [+] = leaning right)")
     ylabel!(p[plot_row_num,plot_col_num], "steer command\n([+] = pushing right)")
-
   end
 
-    # Display the plot
+  # Display the plot
   savefig(p, "$plot_path/$car_name-b.png")
   savefig(p, "$plot_path/$car_name-b.pdf")
-  # display(p)
 end
 
-function multiline_string(strings::Vector{String}, n::Int; prefix="")
-  # Initialize an empty list to hold the lines
-  lines = []
-  # Initialize a variable to hold the current line
+function multiline_string(strings::Vector{String}, n::Int; prefix="")::String
+  # Pre-allocate for better performance
+  lines = Vector{String}()
+  sizehint!(lines, div(length(strings), 5) + 1)  # Estimate number of lines needed
+  
   current_line = prefix
-  # Iterate over the strings
+  
   for str in strings
       # If the current string fits on the current line, add it to the line
       if length(current_line) + length(str) + 2 <= n
           if isempty(current_line)
-              current_line *= "$str"
+              current_line = str
           else
               current_line *= ", $str"
           end
       # Otherwise, start a new line with the current string
       else
           push!(lines, current_line)
-          current_line = "$str"
+          current_line = str
       end
   end
+  
   # Add the last line to the list
   if !isempty(current_line)
       push!(lines, current_line)
   end
+  
   # Join the lines with newline characters
-  result = join(lines, ",\n")
-  return result
+  return join(lines, ",\n")
 end
 
 
