@@ -585,14 +585,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
         λ_odd = λ_oddmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_odd_start_epoch_fraction) / (epoch_max * 0.4f0)) |> device
         λ_origin = λ_originmax * min(1.0f0, max(0.0f0, epoch - epoch_max * λ_origin_start_epoch_fraction) / (epoch_max * 0.2f0)) |> device
         l = 0.0f0
-        if device == cpu
-          for (x, y) in train_data_loader
-            gs = Flux.gradient(model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin) do model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin
-              l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
-            end
-            state_tree, model = Optimisers.update!(state_tree, model, gs[1])
-          end
-        elseif size(y_train, 1) > batch_size
+        if size(y_train, 1) > batch_size
           # Handle batch processing for both Metal and CUDA
           for (x, y) in train_data_loader
             for ibatch in 1:20
@@ -603,10 +596,8 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
               if ibatch % 2 == 0
                 epoch += 1
                 ilog += 1
-                if ibatch % 50 == 0
-                  push!(losses, l)
-                  push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
-                end
+                push!(losses, l)
+                push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
                 if epoch > epoch_max
                   break
                 end
@@ -617,17 +608,18 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
             end
           end
         else
-          gs = Flux.gradient(model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin) do model, X_train, y_train, λ, λ_monotonic, λ_odd, λ_origin
-            l = loss(X_train', y_train, model, λ, λ_monotonic, λ_odd, λ_origin)
-          end;
-          state_tree, model = Optimisers.update!(state_tree, model, gs[1])
+          for (x, y) in train_data_loader
+            gs = Flux.gradient(model, λ, λ_monotonic, λ_odd, λ_origin) do model, λ, λ_monotonic, λ_odd, λ_origin
+              l = loss(x, y, model, λ, λ_monotonic, λ_odd, λ_origin)
+            end;
+            state_tree, model = Optimisers.update!(state_tree, model, gs[1])
+            GC.gc()
+          end
         end
 
-        if false
-          push!(losses, l)
-          push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
-        end
-        
+        push!(losses, l)
+        push!(lambdas, (λ, λ_monotonic, λ_odd, λ_origin))
+      
         t = now()
         if (t - last_log_time) > Dates.Millisecond(10000) || epoch >= epoch_max
             loss_cur = l
@@ -646,7 +638,7 @@ function train_model(working_dir::String, use_existing_model::Bool, data::DataFr
                 cur_time = Dates.format(now(), "HH:MM:SS")
                 # predict time remaining
                 time_str = "estimating remaining time..."
-                if epoch > 750
+                if epoch / epoch_max > 0.05
                     elapsed = (t - last_log_time).value / 1000 # Milliseconds to seconds
                     epochs = epoch - epoch_last
                     epoch_remaining = epoch_max - epoch
