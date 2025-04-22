@@ -838,8 +838,8 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     return steer_command[1]
   end
 
-  max_abs_lat_jerk = 0.2
-  max_abs_roll = 0.03
+  max_abs_lat_jerk = 0.2f0
+  max_abs_roll = 0.03f0
 
   # Create a function to filter the dataset based on speed
   function filter_data_by_speed(Xi, yi, speed, tolerance; no_jerk=false, no_roll=false, shuffle_data=true)
@@ -867,12 +867,12 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # Iterate over the speed range and create a plot for each speed
   # first w.r.t. lateral jerk
-  speed_step = 6
-  speed_range = 3:speed_step:35
-  lateral_acceleration_range = range(-4.0, 4.0, length=100)
+  speed_step = 6f0
+  speed_range = 3f0:speed_step:35f0
+  lateral_acceleration_range = range(-4.0f0, 4.0f0, length=100)
 
-  marker_alpha = 0.1
-  test_alpha = 0.25
+  marker_alpha = 0.1f0
+  test_alpha = 0.25f0
   train_color = :black
   test_color = :cadetblue
   cpalette = :Dark2_5
@@ -905,7 +905,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     # (i.e. you're entering/exiting a turn at a constant rate that the car isn't keeping up with).
     # Here, we set a lateral jerk value and use that to compute the lateral acceleration at each time step.
     ci = 1
-    for lj in [-1.0, -0.25, 0.0, 0.25, 1.0]
+    for lj in [-1f0, -0.25f0, 0f0, 0.25f0, 1f0]
       x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       
@@ -915,7 +915,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           fill!(rolls, 0f0)
           
           # Create input data
-          input_data = [speed la lj 0.0]
+          input_data = [speed la lj 0f0]
           input_data = hcat(input_data, lat_accels', rolls')
           
           # Get model prediction
@@ -958,7 +958,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
     
     # Plot "sustained error", so that the amount of lat accel error propogates backwards and forwards through time
     ci = 1
-    for lj in -1.0:0.5:1.0
+    for lj in -1f0:0.5f0:1f0
       x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       
@@ -969,7 +969,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
               rolls[idx] = 0f0
           end
           
-          input_data = [speed la 0.0 0.0]
+          input_data = [speed la 0f0 0f0]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           
@@ -1015,7 +1015,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
     # Plot the model output
     ci = 1
-    for gla in -0.1:0.05:0.1
+    for gla in -0.1f0:0.05f0:0.1f0
       x_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       y_model = Vector{Float32}(undef, length(lateral_acceleration_range))
       
@@ -1023,7 +1023,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           fill!(lat_accels, la)
           fill!(rolls, gla)
           
-          input_data = [speed la 0.0 gla]
+          input_data = [speed la 0f0 gla]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           
@@ -1059,9 +1059,9 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
   # fourth column will be as a function of dynamic roll (past/future changing linearly).
 
   plot_col_num = 1
-  lateral_accel_range = -2.0:1.0:2.0
-  lateral_jerk_range = -3.0:0.1:3.0
-  roll_range = -0.2:0.01:0.2
+  lateral_accel_range = -2f0:1f0:2f0
+  lateral_jerk_range = -3f0:0.1f0:3f0
+  roll_range = -0.2f0:0.01f0:0.2f0
 
   p = plot(layout = (size(collect(speed_range), 1), 4), legend=:bottomright, size=(2500, 2300), margin=8mm)
 
@@ -1082,7 +1082,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
       fill!(rolls, 0f0)
       
       for (i, lj) in enumerate(lateral_jerk_range)
-          input_data = [speed la lj 0.0]
+          input_data = [speed la lj 0f0]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           x_model[i] = lj
@@ -1123,7 +1123,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
               rolls[idx] = 0f0
           end
           
-          input_data = [speed la 0.0 0.0]
+          input_data = [speed la 0f0 0f0]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           
@@ -1165,7 +1165,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
           # Fill rolls with constant value
           fill!(rolls, ro)
           
-          input_data = [speed la 0.0 ro]
+          input_data = [speed la 0f0 ro]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           
@@ -1189,7 +1189,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
 
   # now plot model response to roll rate (same as previous, but
   # lateral acceleration lines are replaced with lines with different roll rates)
-  roll_rate_range = -0.4:0.2:0.4
+  roll_rate_range = -0.4f0:0.2f0:0.4f0
   plot_col_num += 1
   for (plot_row_num, speed) in enumerate(speed_range)
     vline!(p[plot_row_num,plot_col_num], [0.0], color=:black, linewidth=1, label="")
@@ -1211,7 +1211,7 @@ function test_plot_model(model::Flux.Chain, plot_path::String, X_train::Matrix{F
               rolls[idx] = ro + t * rr
           end
           
-          input_data = [speed 0.0 0.0 ro]
+          input_data = [speed 0f0 0f0 ro]
           input_data = hcat(input_data, lat_accels', rolls')
           steer_command = feedforward_function(input_data)
           
